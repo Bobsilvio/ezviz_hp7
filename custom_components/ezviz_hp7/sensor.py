@@ -16,36 +16,36 @@ def _dig(data: dict, path: str, default=None):
     return cur
 
 SENSORS = [
-    # Identità e stato di base
-    ("name", "Nome Dispositivo", None, None, "mdi:label", None),
-    ("version", "Firmware", None, None, "mdi:update", None),
-    ("status", "Stato", None, None, "mdi:power", lambda v: "online" if v in (1, "1", True, "online") else "offline"),
+    # Identity and basic status
+    ("name", "name", None, None, "mdi:label", None),
+    ("version", "version", None, None, "mdi:update", None),
+    ("status", "status", None, None, "mdi:power", lambda v: "online" if v in (1, "1", True, "online") else "offline"),
 
-    # Rete
-    ("signal", "WiFi Segnale", None, "%", "mdi:wifi",
+    # Network
+    ("signal", "signal", None, "%", "mdi:wifi",
      lambda v: v if isinstance(v, (int, float)) else None),
-    ("ssid", "SSID WiFi", None, None, "mdi:wifi", None),
-    ("local_ip", "IP Locale", None, None, "mdi:ip", None),
-    ("wan_ip", "IP WAN", None, None, "mdi:wan", None),
+    ("ssid", "ssid", None, None, "mdi:wifi", None),
+    ("local_ip", "local_ip", None, None, "mdi:ip", None),
+    ("wan_ip", "wan_ip", None, None, "mdi:wan", None),
 
-    # Sensori e stato operativo
-    ("pir_status", "PIR Movimento", None, None, "mdi:motion-sensor",
-     lambda v: "attivo" if v in (1, "1", True, "true") else "inattivo"),
+    # Sensors and operational status
+    ("pir_status", "pir_status", None, None, "mdi:motion-sensor",
+     lambda v: "active" if v in (1, "1", True, "true") else "inactive"),
 
-    ("motion", "Movimento", None, None, "mdi:run",
-     lambda v: "rilevato" if v in (1, "1", True, "true") else "nessuno"),
+    ("motion", "motion", None, None, "mdi:run",
+     lambda v: "detected" if v in (1, "1", True, "true") else "none"),
 
-    # Ultimi eventi / diagnostica
-    ("last_alarm_time", "Ultimo Allarme", None, None, "mdi:clock-alert", None),
-    ("alarm_name", "Tipo Allarme", None, None, "mdi:alert", None),
-    ("seconds_last_trigger", "Secondi Ultimo Movimento", None, "s", "mdi:timer", None),
+    # Last events / diagnostics
+    ("last_alarm_time", "last_alarm_time", None, None, "mdi:clock-alert", None),
+    ("alarm_name", "alarm_name", None, None, "mdi:alert", None),
+    ("seconds_last_trigger", "seconds_last_trigger", None, "s", "mdi:timer", None),
 
-    # Snapshot / foto ultima rilevazione
-#    ("last_alarm_pic", "Ultima Istantanea", None, None, "mdi:camera", None),
+    # Snapshot / last detection photo
+#    ("last_alarm_pic", "last_alarm_pic", None, None, "mdi:camera", None),
 
-    # Aggiornamenti firmware
-    ("upgrade_available", "Aggiornamento Disponibile", None, None, "mdi:update",
-     lambda v: "sì" if v in (1, "1", True, "true") else "no"),
+    # Firmware updates
+    ("upgrade_available", "upgrade_available", None, None, "mdi:update",
+     lambda v: "yes" if v in (1, "1", True, "true") else "no"),
 ]
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -58,11 +58,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class Hp7Sensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator, serial, path, name, device_class, unit, icon, transform):
+    def __init__(self, coordinator, serial, path, translation_key, device_class, unit, icon, transform):
         super().__init__(coordinator)
         self._serial = serial
         self._path = path
-        self._attr_name = name
+        self._attr_translation_key = translation_key
         self._attr_unique_id = f"{DOMAIN}_{serial}_sensor_{path.replace('.', '_')}"
         self._attr_device_class = device_class
         self._unit = unit

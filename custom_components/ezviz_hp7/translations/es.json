@@ -1,0 +1,130 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Conectar EZVIZ HP7",
+        "description": "Ingrese sus credenciales de EZVIZ y región.",
+        "data": {
+          "username": "Usuario",
+          "password": "Contraseña",
+          "region": "Región"
+        }
+      },
+      "pick_serial": {
+        "title": "Seleccionar Dispositivo",
+        "description": "Elija el número de serie de su HP7.",
+        "data": {
+          "serial": "Número de Serie"
+        }
+      },
+      "enter_serial": {
+        "title": "Ingresar Número de Serie",
+        "description": "Ingrese manualmente el número de serie de su HP7.",
+        "data": {
+          "serial": "Número de Serie"
+        }
+      }
+    },
+    "error": {
+      "auth": "Error de inicio de sesión. Verifique credenciales/región."
+    },
+    "abort": {
+      "no_devices": "No se encontraron dispositivos en la cuenta.",
+      "already_configured": "El dispositivo ya está configurado"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "name": {
+        "name": "Nombre del Dispositivo"
+      },
+      "version": {
+        "name": "Firmware"
+      },
+      "status": {
+        "name": "Estado",
+        "state": {
+          "online": "en línea",
+          "offline": "desconectado"
+        }
+      },
+      "signal": {
+        "name": "Señal WiFi"
+      },
+      "ssid": {
+        "name": "SSID WiFi"
+      },
+      "local_ip": {
+        "name": "IP Local"
+      },
+      "wan_ip": {
+        "name": "IP WAN"
+      },
+      "pir_status": {
+        "name": "Movimiento PIR",
+        "state": {
+          "active": "activo",
+          "inactive": "inactivo"
+        }
+      },
+      "motion": {
+        "name": "Movimiento",
+        "state": {
+          "detected": "detectado",
+          "none": "ninguno"
+        }
+      },
+      "last_alarm_time": {
+        "name": "Última Alarma"
+      },
+      "alarm_name": {
+        "name": "Tipo de Alarma"
+      },
+      "seconds_last_trigger": {
+        "name": "Segundos Desde Último Movimiento"
+      },
+      "upgrade_available": {
+        "name": "Actualización Disponible",
+        "state": {
+          "yes": "sí",
+          "no": "no"
+        }
+      }
+    },
+    "binary_sensor": {
+      "motion_trigger": {
+        "name": "Movimiento"
+      }
+    },
+    "button": {
+      "unlock_gate": {
+        "name": "Desbloquear Portón"
+      },
+      "unlock_door": {
+        "name": "Desbloquear Puerta"
+      }
+    }
+  },
+  "services": {
+    "unlock_gate": {
+      "name": "Desbloquear portón",
+      "description": "Desbloquear el portón mediante la nube EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Número de serie",
+          "description": "Número de serie del dispositivo"
+        }
+      }
+    },
+    "unlock_door": {
+      "name": "Desbloquear puerta",
+      "description": "Desbloquear la puerta mediante la nube EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Número de serie",
+          "description": "Número de serie del dispositivo"
+        }
+      }
+    }
+  }
+}
