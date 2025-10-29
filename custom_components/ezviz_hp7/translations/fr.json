@@ -1,0 +1,125 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connecter le HP7 d'EZVIZ",
+        "description": "Entrez vos identifiants EZVIZ et votre région.",
+        "data": {
+          "username": "Nom d'utilisateur",
+          "password": "Mot de passe",
+          "region": "Région"
+        }
+      },
+      "pick_serial": {
+        "title": "Sélectionner un équipement",
+        "description": "Choisissez le numéro de série de votre HP7.",
+        "data": {
+          "serial": "Numéro de série"
+        }
+      },
+      "enter_serial": {
+        "title": "Saisir le numéro de série",
+        "description": "Saisissez manuellement le numéro de série de votre HP7.",
+        "data": {
+          "serial": "Numéro de série"
+        }
+      }
+    },
+    "error": {
+      "auth": "Échec d'authentification. Vérifiez identifiants/région."
+    },
+    "abort": {
+      "no_devices": "Pas d'équiquement trouvé sur ce compte.",
+      "already_configured": "Équipement déjà configuré"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "name": {
+        "name": "Nom de l'équipement"
+      },
+      "version": {
+        "name": "Firmware"
+      },
+      "status": {
+        "name": "Statut",
+        "state": {
+          "online": "En ligne",
+          "offline": "Hors ligne"
+        }
+      },
+      "signal": {
+        "name": "Signal WiFi"
+      },
+      "ssid": {
+        "name": "SSID"
+      },
+      "local_ip": {
+        "name": "IP locale"
+      },
+      "wan_ip": {
+        "name": "IP publique"
+      },
+      "pir_status": {
+        "name": "Capteur de mouvement infrarouge",
+        "state": {
+          "active": "Actif",
+          "inactive": "Inactif"
+        }
+      },
+      "motion": {
+        "name": "Mouvement",
+        "state": {
+          "detected": "Détecté",
+          "none": "Aucun"
+        }
+      },
+      "last_alarm_time": {
+        "name": "Dernière alarme"
+      },
+      "alarm_name": {
+        "name": "Type d'alarme"
+      },
+      "seconds_last_trigger": {
+        "name": "Secondes depuis le dernier mouvement"
+      },
+      "upgrade_available": {
+        "name": "Mise à jour disponible",
+        "state": {
+          "yes": "Oui",
+          "no": "Non"
+        }
+      }
+    },
+    "button": {
+      "unlock_gate": {
+        "name": "Ouvrir portail"
+      },
+      "unlock_door": {
+        "name": "Ouvrir portillon"
+      }
+    }
+  },
+  "services": {
+    "unlock_gate": {
+      "name": "Ouvrir portail",
+      "description": "Ouvrir le portail via le cloud EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Numéro de série",
+          "description": "Numéro de série de l'équipement"
+        }
+      }
+    },
+    "unlock_door": {
+      "name": "Ouvrir portillon",
+      "description": "Ouvrir le portillon via le cloud EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Numéro de série",
+          "description": "Numéro de série de l'équipement"
+        }
+      }
+    }
+  }
+}
