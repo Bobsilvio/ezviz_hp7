@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Conecta EZVIZ HP7",
+        "description": "Introducir las credenciales EZVIZ y la región."
+      },
+      "pick_serial": {
+        "title": "Selecciona dispositivo",
+        "description": "Seleccione el número de serie de su HP7."
+      }
+    },
+    "error": {
+      "auth": "Login fallido. Compruebe credencial/región."
+    },
+    "abort": {
+      "no_devices": "No se encontraron dispositivos en la cuenta."
+    }
+  }
+}
