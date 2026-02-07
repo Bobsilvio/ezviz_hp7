@@ -60,13 +60,6 @@
       "wan_ip": {
         "name": "IP publique"
       },
-      "pir_status": {
-        "name": "Capteur de mouvement infrarouge",
-        "state": {
-          "active": "Actif",
-          "inactive": "Inactif"
-        }
-      },
       "motion": {
         "name": "Mouvement",
         "state": {
@@ -89,6 +82,26 @@
           "yes": "Oui",
           "no": "Non"
         }
+      }
+    },
+    "binary_sensor": {
+      "motion_trigger": {
+        "name": "Détection de Mouvement"
+      },
+      "smart_detection_alarm": {
+        "name": "Alarme de Détection Intelligente"
+      },
+      "intelligent_detection_alarm": {
+        "name": "Détection Intelligente"
+      },
+      "doorbell_ringing": {
+        "name": "Sonnette qui Sonne"
+      },
+      "gate_open": {
+        "name": "Portail Ouvert"
+      },
+      "unlock_lock": {
+        "name": "Serrure Déverrouillée"
       }
     },
     "button": {

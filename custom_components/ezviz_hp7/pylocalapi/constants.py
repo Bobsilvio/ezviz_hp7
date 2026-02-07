@@ -469,6 +469,7 @@ class BatteryCameraWorkMode(Enum):
     SUPER_POWER_SAVE = 3
     CUSTOM = 4
     HYBERNATE = 5  # not sure
+    ALWAYS_ON_VIDEO = 7
 
 
 @unique
@@ -493,4 +494,5 @@ class DeviceCatagories(Enum):
     BASE_STATION_DEVICE_CATEGORY = "XVR"
     CAT_EYE_CATEGORY = "CatEye"
     LIGHTING = "lighting"
+    SOCKET = "Socket"
     W2H_BASE_STATION_DEVICE_CATEGORY = "IGateWay"

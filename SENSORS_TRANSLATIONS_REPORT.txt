@@ -1,0 +1,85 @@
+📋 ANALISI SENSORI E TRADUZIONI - REPORT
+
+═══════════════════════════════════════════════════════════════════════════
+
+🔍 SENSORI TROVATI:
+
+📊 SENSOR (sensor.py):
+  ✓ name
+  ✓ version
+  ✓ status
+  ✓ signal
+  ✓ ssid
+  ✓ local_ip
+  ✓ wan_ip
+  ✓ motion
+  ✓ last_alarm_time
+  ✓ alarm_name
+  ✓ seconds_last_trigger
+  ✓ upgrade_available
+  TOTALE: 12 sensori
+
+📊 BINARY SENSOR (binary_sensor.py):
+  ✓ motion_trigger (translation_key)
+  ✓ smart_detection_alarm (hardcoded _attr_name)
+  ✓ intelligent_detection_alarm (hardcoded _attr_name)
+  ✓ doorbell_ringing (hardcoded _attr_name)
+  ✓ gate_open (hardcoded _attr_name)
+  ✓ unlock_lock (hardcoded _attr_name)
+  TOTALE: 6 binary sensori
+
+═══════════════════════════════════════════════════════════════════════════
+
+📚 TRADUZIONI (strings.json):
+
+✓ SENSORI TRADOTTI: 12 entry
+  name, version, status, signal, ssid, local_ip, wan_ip, motion,
+  last_alarm_time, alarm_name, seconds_last_trigger, upgrade_available
+
+⚠️  EXTRA NON USATE:
+  ✗ pir_status (tradotto ma NON in sensor.py)
+
+✗ BINARY SENSORI TRADOTTI: 0 entry
+  (I binary sensor hanno solo nomi hardcoded, non translation_key)
+
+═══════════════════════════════════════════════════════════════════════════
+
+🔴 PROBLEMI IDENTIFICATI:
+
+1. ⚠️  PIR_STATUS - TRADUZIONE INUTILE
+   └─ Tradotto in strings.json ma non usato in sensor.py
+   └─ Dovrebbe essere rimosso o usato
+
+2. ⚠️  BINARY SENSORI - NOMI NON TRADOTTI
+   └─ I 6 binary_sensor hanno _attr_name hardcoded (inglese)
+   └─ Mancano translation_key e traduzioni
+   └─ Nomi interessati:
+     • motion_trigger → rilevamento movimento
+     • intelligent_detection_alarm → Rilevamento intelligente
+     • doorbell_ringing → Citofono campanello  
+     • gate_open → Cancello aperto
+     • unlock_lock → Serratura sbloccata
+     • (smart_detection_alarm manca translation)
+
+3. ✓ BUTTONS - OK
+   └─ unlock_gate, unlock_door tradotti correttamente
+
+═══════════════════════════════════════════════════════════════════════════
+
+💡 RACCOMANDAZIONI:
+
+PRIORITÀ ALTA:
+1. Aggiungere translation_key ai binary_sensor anzichè _attr_name
+2. Aggiungere traduzioni per i binary_sensor in strings.json + it.json
+3. Rimuovere translation "pir_status" se non usato
+
+PRIORITÀ MEDIA:
+1. Verificare se i nomi italiani nelle traduzioni sono corretti
+2. Controllare se tutte le lingue (en.json, es.json, fr.json) hanno le stesse entry
+
+═══════════════════════════════════════════════════════════════════════════
+
+✅ STATUS COMPLESSIVO: 60% COMPLETO
+  • Sensori: 100% tradotti ✓
+  • Binary Sensori: 0% tradotti ✗
+  • Buttons: 100% tradotti ✓

@@ -60,13 +60,6 @@
       "wan_ip": {
         "name": "IP WAN"
       },
-      "pir_status": {
-        "name": "Movimiento PIR",
-        "state": {
-          "active": "activo",
-          "inactive": "inactivo"
-        }
-      },
       "motion": {
         "name": "Movimiento",
         "state": {
@@ -89,6 +82,26 @@
           "yes": "sí",
           "no": "no"
         }
+      }
+    },
+    "binary_sensor": {
+      "motion_trigger": {
+        "name": "Detección de Movimiento"
+      },
+      "smart_detection_alarm": {
+        "name": "Alarma de Detección Inteligente"
+      },
+      "intelligent_detection_alarm": {
+        "name": "Detección Inteligente"
+      },
+      "doorbell_ringing": {
+        "name": "Timbre Sonando"
+      },
+      "gate_open": {
+        "name": "Portón Abierto"
+      },
+      "unlock_lock": {
+        "name": "Cerradura Desbloqueada"
       }
     },
     "button": {

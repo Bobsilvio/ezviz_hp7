@@ -1,6 +1,6 @@
 {
   "name": "ezviz_hp7",
-  "version": "0.1.4",
+  "version": "0.3.0",
   "description": "Home Assistant custom integration for Ezviz HP7",
   "keywords": [
     "home-assistant",
