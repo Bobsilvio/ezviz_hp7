@@ -1,4 +1,4 @@
-"""EZVIZ HP7 API client."""
+"""EZVIZ HP7/CP7 API client."""
 from __future__ import annotations
 
 import logging
@@ -6,6 +6,7 @@ from typing import Any
 
 from .pylocalapi.client import EzvizClient
 from .pylocalapi.camera import EzvizCamera
+from .pylocalapi.cas import EzvizCAS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ REGION_URLS: dict[str, str] = {
 
 
 class Hp7Api:
-    """EZVIZ HP7 API client for cloud and local operations."""
+    """EZVIZ HP7/CP7 API client for cloud and local operations."""
 
     def __init__(
         self,
@@ -32,8 +33,8 @@ class Hp7Api:
         region: str = "eu",
         token: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize EZVIZ HP7 API client.
-        
+        """Initialize EZVIZ API client.
+
         Args:
             username: EZVIZ account username.
             password: EZVIZ account password.
@@ -48,22 +49,17 @@ class Hp7Api:
         self._url = REGION_URLS.get(region, REGION_URLS["eu"])
         self.supports_door = True
         self.supports_gate = True
-
+        self.model: str = "HP7"
+        self._permanent_password: str | None = None
 
     @property
     def token(self) -> dict[str, Any] | None:
-        """Get the current authentication token.
-        
-        Returns:
-            Authentication token dict or None if not authenticated.
-        """
+        """Get the current authentication token."""
         return self._token
 
     def ensure_client(self) -> None:
         """Ensure EzvizClient is initialized.
-        
-        Creates the client if it doesn't exist and handles token authentication.
-        
+
         Raises:
             RuntimeError: If client initialization fails.
         """
@@ -86,26 +82,26 @@ class Hp7Api:
 
     def _login_and_store_token(self) -> None:
         """Authenticate with EZVIZ server and store token.
-        
+
         Raises:
             ValueError: If login fails.
         """
         if not self._client:
             raise RuntimeError("Client not initialized")
-            
+
         try:
             self._token = self._client.login()
-            _LOGGER.debug("EZVIZ HP7 authentication successful")
+            _LOGGER.debug("EZVIZ authentication successful")
         except (ValueError, KeyError) as exc:
-            _LOGGER.error("EZVIZ HP7 authentication failed: %s", exc)
+            _LOGGER.error("EZVIZ authentication failed: %s", exc)
             raise ValueError(f"Authentication failed: {exc}") from exc
 
     def login(self) -> bool:
         """Authenticate with EZVIZ server.
-        
+
         Returns:
             True if authentication was successful.
-            
+
         Raises:
             RuntimeError: If authentication fails.
         """
@@ -114,7 +110,7 @@ class Hp7Api:
 
     def detect_capabilities(self, serial: str) -> None:
         """Detect device capabilities from EZVIZ API.
-        
+
         Args:
             serial: Device serial number.
         """
@@ -122,30 +118,79 @@ class Hp7Api:
         try:
             if self._client:
                 dev = self._client.get_device_infos(serial).get(serial, {})
-                _LOGGER.debug("EZVIZ HP7 device %s capabilities detected", serial)
+                _LOGGER.debug("Device %s capabilities detected", serial)
+                sub_cat = (
+                    dev.get("deviceSubCategory")
+                    or dev.get("deviceInfos", {}).get("deviceSubCategory")
+                    or ""
+                ).upper()
+                if "CP7" in sub_cat or "CP7" in serial.upper():
+                    self.model = "CP7"
         except (KeyError, AttributeError, ValueError) as exc:
             _LOGGER.debug("Failed to detect capabilities for %s: %s", serial, exc)
-        
-        # Set default capabilities
+
         self.supports_door = True
         self.supports_gate = True
 
+    # ── Permanent password (for LAN Hikvision protocol) ──────────────
+
+    def get_permanent_password(self, serial: str) -> str | None:
+        """Get permanent_password via EUCAS cmd 0x2845 (cached after first call).
+
+        This is the password needed for LAN Hikvision protocol login.
+        Required for CPD7 cameras that don't expose RTSP.
+
+        Args:
+            serial: Device serial number.
+
+        Returns:
+            Permanent password string, or None if unavailable.
+        """
+        if self._permanent_password:
+            return self._permanent_password
+
+        if not self._token or "service_urls" not in self._token:
+            return None
+
+        try:
+            cas = EzvizCAS(self._token)
+            enc_info = cas.cas_get_encryption(serial)
+            session = enc_info.get("Response", {}).get("Session", {})
+            op_code = session.get("@OperationCode", "")
+            key = session.get("@Key", "")
+
+            if not op_code or not key:
+                _LOGGER.debug("CAS encryption info incomplete for %s", serial)
+                return None
+
+            self._permanent_password = cas.query_permanent_password(
+                serial, op_code, key
+            )
+            _LOGGER.debug("Permanent password fetched for %s", serial)
+            return self._permanent_password
+
+        except Exception as exc:
+            _LOGGER.debug(
+                "Could not fetch permanent password for %s: %s", serial, exc
+            )
+            return None
+
     def list_devices(self) -> dict[str, dict[str, Any]]:
         """List all paired EZVIZ devices.
-        
+
         Returns:
             Dictionary mapping device serial to device info.
         """
         self.ensure_client()
         if not self._client:
             return {}
-            
+
         try:
             devices = self._client.get_device_infos()
         except (KeyError, AttributeError, ValueError) as exc:
             _LOGGER.warning("Failed to list devices: %s", exc)
             return {}
-        
+
         result: dict[str, dict[str, Any]] = {}
         for serial, data in devices.items():
             name = data.get("name") or data.get("deviceName") or "Device"
@@ -164,18 +209,18 @@ class Hp7Api:
 
     def _try_unlock(self, serial: str, lock_no: int) -> bool:
         """Attempt to unlock a specific lock.
-        
+
         Args:
             serial: Device serial number.
             lock_no: Lock number to unlock.
-            
+
         Returns:
             True if unlock was successful.
         """
         self.ensure_client()
         if not self._token or not self._client:
             return False
-            
+
         user_id = self._token.get("username") or self._username
         try:
             self._client.remote_unlock(serial, user_id, lock_no)
@@ -183,56 +228,45 @@ class Hp7Api:
             return True
         except (KeyError, AttributeError, ValueError, Exception) as exc:
             _LOGGER.warning(
-                "Remote unlock failed (serial=%s, lock_no=%s): %s", serial, lock_no, exc
+                "Remote unlock failed (serial=%s, lock_no=%s): %s",
+                serial,
+                lock_no,
+                exc,
             )
             return False
 
     def unlock_door(self, serial: str) -> bool:
-        """Unlock the door lock.
-        
-        Args:
-            serial: Device serial number.
-            
-        Returns:
-            True if unlock was successful.
-        """
+        """Unlock the door lock."""
         return self._try_unlock(serial, DEFAULT_DOOR_LOCK_NO) or self._try_unlock(
             serial, DEFAULT_GATE_LOCK_NO
         )
 
     def unlock_gate(self, serial: str) -> bool:
-        """Unlock the gate lock.
-        
-        Args:
-            serial: Device serial number.
-            
-        Returns:
-            True if unlock was successful.
-        """
+        """Unlock the gate lock."""
         return self._try_unlock(serial, DEFAULT_GATE_LOCK_NO) or self._try_unlock(
             serial, DEFAULT_DOOR_LOCK_NO
         )
 
     def get_status(self, serial: str) -> dict[str, Any]:
         """Get current device status.
-        
+
         Args:
             serial: Device serial number.
-            
+
         Returns:
             Dictionary with device status and sensor readings.
         """
         self.ensure_client()
         if not self._client:
             return {}
-            
+
         try:
             camera = EzvizCamera(self._client, serial)
             cam_status = camera.status(refresh=True)
             wifi_info = cam_status.get("WIFI", {})
 
             _LOGGER.debug("Device status received for %s", serial)
-            
+
             return {
                 "name": cam_status.get("name"),
                 "version": cam_status.get("version"),
@@ -248,6 +282,7 @@ class Hp7Api:
                 "ssid": wifi_info.get("ssid"),
                 "signal": wifi_info.get("signal"),
                 "local_ip": cam_status.get("local_ip") or wifi_info.get("address"),
+                "local_rtsp_port": cam_status.get("local_rtsp_port") or "554",
             }
 
         except (KeyError, AttributeError, ValueError, Exception) as exc:

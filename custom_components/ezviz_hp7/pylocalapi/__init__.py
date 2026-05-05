@@ -10,6 +10,14 @@ symbols for convenient imports.
 from .camera import EzvizCamera
 from .cas import EzvizCAS
 from .client import EzvizClient
+from .hikvision import (
+    cas_lan_handshake,
+    lan_login,
+    session_upgrade,
+    start_realplay_stream,
+    full_chain,
+    read_imkh_frame,
+)
 from .constants import (
     AlarmDetectHumanCar,
     BatteryCameraNewWorkMode,
@@ -66,7 +74,6 @@ from .light_bulb import EzvizLightBulb
 from .models import EzvizDeviceRecord, build_device_records_map
 from .mqtt import EzvizToken, MQTTClient, MqttData, ServiceUrls
 from .smart_plug import EzvizSmartPlug
-from .test_cam_rtsp import TestRTSPAuth
 
 __all__ = [
     "AlarmDetectHumanCar",
@@ -99,7 +106,6 @@ __all__ = [
     "ServiceUrls",
     "SoundMode",
     "SupportExt",
-    "TestRTSPAuth",
     "build_device_records_map",
     "day_night_mode_value",
     "day_night_sensitivity_value",
