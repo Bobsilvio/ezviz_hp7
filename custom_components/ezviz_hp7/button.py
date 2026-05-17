@@ -24,7 +24,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up EZVIZ HP7 button entities.
-    
+
     Args:
         hass: Home Assistant instance.
         entry: Config entry.
@@ -39,7 +39,7 @@ async def async_setup_entry(
         entities.append(EzvizHp7Button(hass, api, serial, "unlock_gate"))
     if getattr(api, "supports_door", False):
         entities.append(EzvizHp7Button(hass, api, serial, "unlock_door"))
-    
+
     async_add_entities(entities)
 
 
@@ -82,11 +82,11 @@ class EzvizHp7Button(ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle button press.
-        
+
         Sends unlock command to EZVIZ device.
         """
         _LOGGER.debug("EZVIZ HP7 button pressed: %s (%s)", self._action, self._serial)
-        
+
         success = False
         if self._action == "unlock_gate":
             success = await self.hass.async_add_executor_job(
@@ -100,7 +100,7 @@ class EzvizHp7Button(ButtonEntity):
             log_msg = "Unlock Door"
         else:
             return
-        
+
         if success:
             _LOGGER.info("EZVIZ HP7: %s successful", log_msg)
         else:

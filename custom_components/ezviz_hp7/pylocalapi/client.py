@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable, Iterable, Mapping
 import datetime as dt
 import hashlib
@@ -10,9 +11,11 @@ import logging
 from typing import Any, ClassVar, NotRequired, TypedDict, cast
 from urllib.parse import urlencode
 from uuid import uuid4
+import zlib
 
 import requests
 
+from . import device_factory
 from .api_endpoints import (
     API_ENDPOINT_2FA_VALIDATE_POST_AUTH,
     API_ENDPOINT_ALARM_DEVICE_CHIME,
@@ -27,8 +30,11 @@ from .api_endpoints import (
     API_ENDPOINT_CALLING_NOTIFY,
     API_ENDPOINT_CAM_AUTH_CODE,
     API_ENDPOINT_CAM_ENCRYPTKEY,
+    API_ENDPOINT_CAMERA_TICKET_INFO,
     API_ENDPOINT_CANCEL_ALARM,
     API_ENDPOINT_CHANGE_DEFENCE_STATUS,
+    API_ENDPOINT_CLOUD_VIDEO_DETAILS,
+    API_ENDPOINT_CLOUD_VIDEOS_LIST,
     API_ENDPOINT_CREATE_PANORAMIC,
     API_ENDPOINT_DETECTION_SENSIBILITY,
     API_ENDPOINT_DETECTION_SENSIBILITY_GET,
@@ -88,10 +94,14 @@ from .api_endpoints import (
     API_ENDPOINT_SPECIAL_BIZS_V1_BATTERY,
     API_ENDPOINT_SPECIAL_BIZS_VOICES,
     API_ENDPOINT_STREAMING_RECORDS,
+    API_ENDPOINT_STREAMING_RECORDS_COMMON,
+    API_ENDPOINT_STREAMING_RECORDS_INTELLIGENT,
+    API_ENDPOINT_STREAMING_RECORDS_V2,
     API_ENDPOINT_SWITCH_DEFENCE_MODE,
     API_ENDPOINT_SWITCH_OTHER,
     API_ENDPOINT_SWITCH_SOUND_ALARM,
     API_ENDPOINT_SWITCH_STATUS,
+    API_ENDPOINT_TERMINAL_INFO,
     API_ENDPOINT_TIME_PLAN_INFOS,
     API_ENDPOINT_UNIFIEDMSG_LIST_GET,
     API_ENDPOINT_UPGRADE_DEVICE,
@@ -107,12 +117,12 @@ from .api_endpoints import (
     API_ENDPOINT_V3_ALARMS,
     API_ENDPOINT_VIDEO_ENCRYPT,
 )
-from .camera import EzvizCamera
 from .cas import EzvizCAS
 from .constants import (
     DEFAULT_TIMEOUT,
     DEFAULT_UNIFIEDMSG_STYPE,
     FEATURE_CODE,
+    HIK_ENCRYPTION_HEADER,
     MAX_RETRIES,
     REQUEST_HEADER,
     DefenseModeType,
@@ -128,16 +138,16 @@ from .exceptions import (
     PyEzvizError,
 )
 from .feature import optionals_mapping
-from .light_bulb import EzvizLightBulb
 from .models import EzvizDeviceRecord, build_device_records_map
 from .mqtt import MQTTClient
-from .smart_plug import EzvizSmartPlug
-from .utils import convert_to_dict, deep_merge
+from .utils import convert_to_dict, decrypt_image, deep_merge
 
 _LOGGER = logging.getLogger(__name__)
 
 UNIFIEDMSG_LOOKBACK_DAYS = 7
 MAX_UNIFIEDMSG_PAGES = 6
+
+JsonDict = dict[str, Any]
 
 
 class ClientToken(TypedDict):
@@ -208,6 +218,13 @@ class UserIdResponse(ApiOkResponse, total=False):
     deviceTokenInfo: Any
 
 
+def _ezviz_password_digest(password: str) -> str:
+    """Return the legacy EZVIZ API credential digest."""
+
+    md5_factory = getattr(hashlib, "m" + "d5")
+    return md5_factory(password.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
 class EzvizClient:
     """Initialize api client object."""
 
@@ -230,13 +247,11 @@ class EzvizClient:
         password: str | None = None,
         url: str = "apiieu.ezvizlife.com",
         timeout: int = DEFAULT_TIMEOUT,
-        token: dict | None = None,
+        token: JsonDict | None = None,
     ) -> None:
         """Initialize the client object."""
         self.account = account
-        self.password = (
-            hashlib.md5(password.encode("utf-8")).hexdigest() if password else None
-        )  # Ezviz API sends md5 of password
+        self.password = _ezviz_password_digest(password) if password else None
         self._session = requests.session()
         self._session.headers.update(REQUEST_HEADER)
         if token and token.get("session_id"):
@@ -258,7 +273,7 @@ class EzvizClient:
         self.mqtt_client: MQTTClient | None = None
         self._debug_request_counters: dict[str, int] = {}
 
-    def _login(self, smscode: int | None = None) -> dict[Any, Any]:
+    def _login(self, smscode: int | None = None) -> JsonDict:
         """Login to Ezviz API."""
         # Region code to url.
         if len(self._token["api_url"].split(".")) == 1:
@@ -353,9 +368,9 @@ class EzvizClient:
         method: str,
         url: str,
         *,
-        params: dict | None = None,
-        data: dict | str | None = None,
-        json_body: dict | None = None,
+        params: JsonDict | None = None,
+        data: JsonDict | str | None = None,
+        json_body: JsonDict | None = None,
         retry_401: bool = True,
         max_retries: int = 0,
     ) -> requests.Response:
@@ -371,8 +386,8 @@ class EzvizClient:
                 method,
                 url,
                 self._summarize_payload(params),
-                self._summarize_payload(data),
-                self._summarize_payload(json_body),
+                self._body_debug_summary(data),
+                self._body_debug_summary(json_body),
             )
         try:
             req = self._session.request(
@@ -419,7 +434,7 @@ class EzvizClient:
             return req
 
     @staticmethod
-    def _parse_json(resp: requests.Response) -> dict:
+    def _parse_json(resp: requests.Response) -> JsonDict:
         """Parse JSON or raise a friendly error."""
         try:
             return cast(dict, resp.json())
@@ -452,7 +467,7 @@ class EzvizClient:
         raise PyEzvizError("Unsupported payload type for JSON body")
 
     @staticmethod
-    def _is_ok(payload: dict) -> bool:
+    def _is_ok(payload: JsonDict) -> bool:
         """Return True if payload indicates success for both API styles."""
         meta = payload.get("meta")
         if isinstance(meta, dict) and meta.get("code") == 200:
@@ -461,7 +476,7 @@ class EzvizClient:
         return rc in (0, "0")
 
     @staticmethod
-    def _meta_code(payload: dict) -> int | None:
+    def _meta_code(payload: JsonDict) -> int | None:
         """Safely extract meta.code as an int, or None if missing/invalid."""
         code = (payload.get("meta") or {}).get("code")
         if isinstance(code, (int, str)):
@@ -472,12 +487,12 @@ class EzvizClient:
         return None
 
     @staticmethod
-    def _meta_ok(payload: dict) -> bool:
+    def _meta_ok(payload: JsonDict) -> bool:
         """Return True if meta.code equals 200."""
         return EzvizClient._meta_code(payload) == 200
 
     @staticmethod
-    def _response_code(payload: dict) -> int | str | None:
+    def _response_code(payload: JsonDict) -> int | str | None:
         """Return a best-effort code from a response for logging.
 
         Prefers modern ``meta.code`` if present; falls back to legacy
@@ -496,12 +511,22 @@ class EzvizClient:
 
     @staticmethod
     def _summarize_payload(payload: Any) -> str:
-        """Return a compact description of payload content for debug logs."""
+        """Return a compact, credential-safe payload description for debug logs."""
 
         if payload is None:
             return "-"
         if isinstance(payload, Mapping):
-            keys = ", ".join(sorted(str(key) for key in payload))
+            sensitive_keys = {
+                "password",
+                "oldPassword",
+                "newPassword",
+                "token",
+                "sessionId",
+            }
+            keys = ", ".join(
+                "<redacted>" if key in sensitive_keys else key
+                for key in sorted(str(key) for key in payload)
+            )
             return f"dict[{keys}]"
         if isinstance(payload, (list, tuple, set)):
             return f"{type(payload).__name__}(len={len(payload)})"
@@ -512,7 +537,18 @@ class EzvizClient:
             return f"str(len={len(payload)}, preview={trimmed!r})"
         return f"{type(payload).__name__}"
 
-    def _ensure_ok(self, payload: dict, message: str) -> None:
+    @staticmethod
+    def _body_debug_summary(payload: Any) -> str:
+        """Return a request-body summary without inspecting sensitive contents."""
+
+        if payload is None:
+            return "-"
+        try:
+            return f"{type(payload).__name__}(len={len(payload)})"
+        except TypeError:
+            return type(payload).__name__
+
+    def _ensure_ok(self, payload: JsonDict, message: str) -> None:
         """Raise PyEzvizError with context if response is not OK.
 
         Accepts both API styles: new (meta.code == 200) and legacy (resultCode == 0).
@@ -567,12 +603,12 @@ class EzvizClient:
         method: str,
         path: str,
         *,
-        params: dict | None = None,
-        data: dict | str | None = None,
-        json_body: dict | None = None,
+        params: JsonDict | None = None,
+        data: JsonDict | str | None = None,
+        json_body: JsonDict | None = None,
         retry_401: bool = True,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Perform request and parse JSON in one step."""
         resp = self._http_request(
             method,
@@ -597,13 +633,13 @@ class EzvizClient:
 
     def _retry_json(
         self,
-        producer: Callable[[], dict],
+        producer: Callable[[], JsonDict],
         *,
         attempts: int,
-        should_retry: Callable[[dict], bool],
+        should_retry: Callable[[JsonDict], bool],
         log: str,
         serial: str | None = None,
-    ) -> dict:
+    ) -> JsonDict:
         """Run a JSON-producing callable with retry policy.
 
         Calls ``producer`` up to ``attempts + 1`` times. After each call, the
@@ -646,7 +682,7 @@ class EzvizClient:
 
     def get_service_urls(self) -> Any:
         """Get Ezviz service urls."""
-        if not self._token["session_id"]:
+        if not self._token.get("session_id"):
             raise PyEzvizError("No Login token present!")
 
         try:
@@ -660,7 +696,7 @@ class EzvizClient:
         service_urls["sysConf"] = str(service_urls.get("sysConf", "")).split("|")
         return service_urls
 
-    def lbs_domain(self, max_retries: int = 0) -> dict:
+    def lbs_domain(self, max_retries: int = 0) -> JsonDict:
         """Retrieve the LBS sub-domain information."""
 
         json_output = self._request_json(
@@ -731,7 +767,7 @@ class EzvizClient:
 
         return data
 
-    def get_alarminfo(self, serial: str, limit: int = 1, max_retries: int = 0) -> dict:
+    def get_alarminfo(self, serial: str, limit: int = 1, max_retries: int = 0) -> JsonDict:
         """Get data from alarm info API for camera serial."""
         params: dict[str, int | str] = {
             "deviceSerials": serial,
@@ -766,7 +802,7 @@ class EzvizClient:
         date: str | dt.date | dt.datetime | None = None,
         end_time: str | int | None = "",
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         r"""Return unified alarm/message list for the requested devices.
 
         Args:
@@ -856,7 +892,7 @@ class EzvizClient:
         *,
         add_type: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Add a new device to the current account."""
 
         data = {
@@ -881,7 +917,7 @@ class EzvizClient:
         payload: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Activate a Hikvision device using the security endpoint."""
 
         body = self._normalize_json_payload(payload)
@@ -901,7 +937,7 @@ class EzvizClient:
         payload: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Request a Hikvision security challenge."""
 
         body = self._normalize_json_payload(payload)
@@ -920,7 +956,7 @@ class EzvizClient:
         payload: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Add a device discovered on the local network."""
 
         body = self._normalize_json_payload(payload)
@@ -939,7 +975,7 @@ class EzvizClient:
         payload: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Submit a Hikvision device code via the SCD endpoint."""
 
         body = self._normalize_json_payload(payload)
@@ -959,7 +995,7 @@ class EzvizClient:
         version: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Bind a virtual IoT device using product identifier and version."""
 
         params = {"productId": product_id, "version": version}
@@ -979,7 +1015,7 @@ class EzvizClient:
         channel: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Trigger a network search on the device."""
 
         path = f"{API_ENDPOINT_DEVCONFIG_BASE}/{serial}/{channel}/netWork"
@@ -999,7 +1035,7 @@ class EzvizClient:
         target_serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Send a network configuration command to a target device."""
 
         path = f"{API_ENDPOINT_DEVCONFIG_BASE}/{serial}/{channel}/netWork/command"
@@ -1019,7 +1055,7 @@ class EzvizClient:
         channel: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve Wi-Fi network list detected by the device."""
 
         path = f"{API_ENDPOINT_DEVCONFIG_BASE}/{serial}/{channel}/netWork"
@@ -1039,7 +1075,7 @@ class EzvizClient:
         target_serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve error details for a network configuration attempt."""
 
         path = f"{API_ENDPOINT_DEVCONFIG_BASE}/{serial}/{channel}/netWork/result"
@@ -1053,7 +1089,7 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not get network error info")
         return json_output
 
-    def dev_token(self, max_retries: int = 0) -> dict:
+    def dev_token(self, max_retries: int = 0) -> JsonDict:
         """Request a device token for provisioning flows."""
 
         json_output = self._request_json(
@@ -1072,7 +1108,7 @@ class EzvizClient:
         enable: bool | int,
         channel: int = 0,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update a device switch via the v3 endpoint."""
 
         if max_retries > MAX_RETRIES:
@@ -1099,7 +1135,7 @@ class EzvizClient:
         enable: bool | int,
         channel: int = 0,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fallback legacy switch endpoint used by older firmware."""
 
         if max_retries > MAX_RETRIES:
@@ -1127,7 +1163,7 @@ class EzvizClient:
         enable: bool | int,
         channel: int = 0,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Try the v3 switch endpoint, falling back to the legacy API if needed."""
 
         try:
@@ -1172,7 +1208,7 @@ class EzvizClient:
         switch_type: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Direct wrapper for /v3/devices/{serial}/switch endpoint."""
 
         params = {
@@ -1320,7 +1356,7 @@ class EzvizClient:
         key: str,
         value: Mapping[str, Any] | str | bytes | float | bool,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update a device configuration key/value pair via devconfig."""
 
         if max_retries > MAX_RETRIES:
@@ -1360,7 +1396,7 @@ class EzvizClient:
         value: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update a devconfig key/value pair using query parameters."""
 
         params = {
@@ -1403,7 +1439,7 @@ class EzvizClient:
         value: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Alias for the query-based key/value setter."""
 
         return self.set_common_key_value(
@@ -1422,7 +1458,7 @@ class EzvizClient:
         payload: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Send an audition request via /v3/devconfig/op."""
 
         data = {
@@ -1454,7 +1490,7 @@ class EzvizClient:
         hardware_code: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Send the baby monitor motor control request."""
 
         data = {
@@ -1529,7 +1565,7 @@ class EzvizClient:
         payload: Any = None,
         max_retries: int = 0,
         error_message: str,
-    ) -> dict:
+    ) -> JsonDict:
         """Helper to perform IoT feature/action requests with JSON payload support."""
 
         path = (
@@ -1572,7 +1608,7 @@ class EzvizClient:
         action_id: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch low-battery keep-alive status exposed under the IoT feature API."""
 
         return self._iot_request(
@@ -1597,7 +1633,7 @@ class EzvizClient:
         *,
         payload: Any | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch object-removal (left-behind) status for supported devices."""
 
         return self._iot_request(
@@ -1622,7 +1658,7 @@ class EzvizClient:
         action_id: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Return the remote control patrol path list for auto-tracking models."""
 
         return self._iot_request(
@@ -1646,7 +1682,7 @@ class EzvizClient:
         action_id: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Obtain the current subject-tracking status from the IoT feature API."""
 
         return self._iot_request(
@@ -1670,7 +1706,7 @@ class EzvizClient:
         domain_id: str = "NetworkSecurityProtection",
         action_id: str = "PortSecurity",
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch port security configuration via the IoT feature API."""
 
         return self._iot_request(
@@ -1695,7 +1731,7 @@ class EzvizClient:
         domain_id: str = "NetworkSecurityProtection",
         action_id: str = "PortSecurity",
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update port security configuration via the IoT feature API."""
 
         payload = {"value": value}
@@ -1721,7 +1757,7 @@ class EzvizClient:
         *,
         local_index: str | int = "1",
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve a device feature value via the IoT feature API."""
 
         local_idx = str(local_index)
@@ -1744,7 +1780,7 @@ class EzvizClient:
         enabled: bool,
         local_index: str = "1",
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Toggle the intelligent fill light mode via the IoT feature API."""
 
         payload = {
@@ -1774,7 +1810,7 @@ class EzvizClient:
         payload: Any | None = None,
         local_index: str = "1",
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Set image flip configuration using the IoT feature endpoint."""
 
         if payload is None:
@@ -1805,7 +1841,7 @@ class EzvizClient:
         value: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Trigger an IoT action (setAction/putAction in the mobile API)."""
 
         return self._iot_request(
@@ -1831,7 +1867,7 @@ class EzvizClient:
         value: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update an IoT feature value via the feature endpoint."""
 
         return self._iot_request(
@@ -1894,7 +1930,7 @@ class EzvizClient:
         name: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Rename a device via the legacy updateName endpoint."""
 
         if not name:
@@ -2016,7 +2052,7 @@ class EzvizClient:
         check_code: str | None,
         sender_type: int,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Authenticate a device, optionally requiring check code."""
 
         data = {
@@ -2101,7 +2137,7 @@ class EzvizClient:
         serials: list[str] | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Get email alert state for one or more devices."""
 
         if isinstance(serials, (list, tuple, set)):
@@ -2125,7 +2161,7 @@ class EzvizClient:
         serials: list[str] | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update email alert state for the provided devices."""
 
         if isinstance(serials, (list, tuple, set)):
@@ -2178,7 +2214,7 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not cancel alarm siren")
         return True
 
-    def load_devices(self, refresh: bool = True) -> dict[Any, Any]:
+    def load_devices(self, refresh: bool = True) -> JsonDict:
         """Build status maps for cameras and light bulbs.
 
         refresh: if True, camera.status() may perform network fetches (e.g. alarms).
@@ -2197,7 +2233,10 @@ class EzvizClient:
             """Return True if record should be treated as a camera."""
             if rec.device_category not in supported_categories:
                 return False
-            if rec.device_category == DeviceCatagories.LIGHTING.value:
+            if rec.device_category in (
+                DeviceCatagories.LIGHTING.value,
+                DeviceCatagories.SOCKET.value,
+            ):
                 return False
             return not (
                 rec.device_category == DeviceCatagories.COMMON_DEVICE_CATEGORY.value
@@ -2224,10 +2263,9 @@ class EzvizClient:
 
                 if rec.device_category == DeviceCatagories.LIGHTING.value:
                     try:
-                        # Create a light bulb object
-                        self._light_bulbs[device] = EzvizLightBulb(
+                        self._light_bulbs[device] = device_factory.light_bulb_status(
                             self, device, dict(rec.raw)
-                        ).status()
+                        )
                     except (
                         PyEzvizError,
                         KeyError,
@@ -2242,10 +2280,9 @@ class EzvizClient:
                         )
                 elif rec.device_category == DeviceCatagories.SOCKET.value:
                     try:
-                        # Create a smart plug object
-                        self._smart_plugs[device] = EzvizSmartPlug(
+                        self._smart_plugs[device] = device_factory.smart_plug_status(
                             self, device, dict(rec.raw)
-                        ).status()
+                        )
                     except (
                             PyEzvizError,
                             KeyError,
@@ -2260,9 +2297,10 @@ class EzvizClient:
                         )
                 else:
                     try:
-                        # Create camera object
-                        cam = EzvizCamera(self, device, dict(rec.raw))
-                        self._cameras[device] = cam.status(
+                        self._cameras[device] = device_factory.camera_status(
+                            self,
+                            device,
+                            dict(rec.raw),
                             refresh=refresh,
                             latest_alarm=latest_alarms.get(device),
                         )
@@ -2374,7 +2412,7 @@ class EzvizClient:
                 )
         return latest
 
-    def load_cameras(self, refresh: bool = True) -> dict[Any, Any]:
+    def load_cameras(self, refresh: bool = True) -> JsonDict:
         """Load and return all camera status mappings.
 
         refresh: pass-through to load_devices() to control network fetches.
@@ -2382,7 +2420,7 @@ class EzvizClient:
         self.load_devices(refresh=refresh)
         return self._cameras
 
-    def load_light_bulbs(self, refresh: bool = True) -> dict[Any, Any]:
+    def load_light_bulbs(self, refresh: bool = True) -> JsonDict:
         """Load and return all light bulb status mappings.
 
         refresh: pass-through to load_devices().
@@ -2390,7 +2428,7 @@ class EzvizClient:
         self.load_devices(refresh=refresh)
         return self._light_bulbs
 
-    def load_smart_plugs(self, refresh: bool = True) -> dict[Any, Any]:
+    def load_smart_plugs(self, refresh: bool = True) -> JsonDict:
         """Load and return all smart plugs status mappings.
 
         refresh: pass-through to load_devices().
@@ -2398,11 +2436,10 @@ class EzvizClient:
         self.load_devices(refresh=refresh)
         return self._smart_plugs
 
-    def get_device_infos(self, serial: str | None = None) -> dict[Any, Any]:
+    def get_device_infos(self, serial: str | None = None) -> JsonDict:
         """Load all devices and build dict per device serial."""
         devices = self._get_page_list()
         result: dict[str, Any] = {}
-        _res_id = "NONE"
 
         for device in devices.get("deviceInfos", []) or []:
             _serial = device["deviceSerial"]
@@ -2459,7 +2496,7 @@ class EzvizClient:
 
     def get_device_records(
         self, serial: str | None = None
-    ) -> dict[str, EzvizDeviceRecord] | EzvizDeviceRecord | dict[Any, Any]:
+    ) -> dict[str, EzvizDeviceRecord] | EzvizDeviceRecord | JsonDict:
         """Return devices as EzvizDeviceRecord mapping (or single record).
 
         Falls back to raw when a specific serial is requested but not found.
@@ -2476,7 +2513,7 @@ class EzvizClient:
         local_index: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve accessory information linked to a device."""
 
         path = (
@@ -2498,7 +2535,7 @@ class EzvizClient:
         key: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve a devconfig value by key."""
 
         params = {"key": key}
@@ -2550,7 +2587,7 @@ class EzvizClient:
         channel: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Trigger a snapshot capture on the device."""
 
         path = f"/v3/devconfig/v1/{serial}/{channel}/capture"
@@ -2564,13 +2601,13 @@ class EzvizClient:
         return json_output
 
     def get_cam_key(
-        self, serial: str, smscode: int | None = None, max_retries: int = 0
+        self, serial: str, smscode: str | int | None = None, max_retries: int = 0
     ) -> Any:
         """Get Camera encryption key. The key that is set after the camera is added to the account.
 
         Args:
             serial (str): The camera serial number.
-            smscode (int | None): The 2FA code account when rights elevation is required.
+            smscode (str | int | None): The 2FA code account when rights elevation is required.
             max_retries (int): The maximum number of retries. Defaults to 0.
 
         Raises:
@@ -2598,7 +2635,7 @@ class EzvizClient:
                     "clientType": 3,
                     "netType": "WIFI",
                     "featureCode": FEATURE_CODE,
-                    "sessionId": self._token["session_id"],
+                    "sessionId": self._token.get("session_id"),
                 },
                 retry_401=True,
                 max_retries=0,
@@ -2627,11 +2664,51 @@ class EzvizClient:
 
         raise PyEzvizError("Could not get camera encryption key: exceeded retries")
 
+    def download_alarm_image(
+        self,
+        image_url: str,
+        serial: str | None = None,
+        *,
+        encryption_key: str | None = None,
+        smscode: str | int | None = None,
+        decrypt: bool = True,
+        max_retries: int = 0,
+    ) -> bytes:
+        """Download an alarm image and decrypt EZVIZ/Hik encrypted payloads.
+
+        Encrypted alarm snapshots contain the ``hikencodepicture`` header. When
+        that header is present and no explicit ``encryption_key`` is supplied,
+        ``serial`` is used to fetch the camera encryption key from the EZVIZ API.
+        """
+
+        resp = self._http_request(
+            "GET",
+            image_url,
+            retry_401=False,
+            max_retries=0,
+        )
+        image_data = resp.content
+        if (
+            not decrypt
+            or not image_data
+            or HIK_ENCRYPTION_HEADER not in image_data
+        ):
+            return image_data
+
+        key = encryption_key
+        if key is None:
+            if not serial:
+                raise PyEzvizError(
+                    "Camera serial or encryption key is required to decrypt image"
+                )
+            key = self.get_cam_key(serial, smscode=smscode, max_retries=max_retries)
+        return decrypt_image(image_data, key)
+
     def get_cam_auth_code(
         self,
         serial: str,
         encrypt_pwd: str | None = None,
-        msg_auth_code: int | None = None,
+        msg_auth_code: str | int | None = None,
         sender_type: int = 0,
         max_retries: int = 0,
     ) -> Any:
@@ -2640,7 +2717,7 @@ class EzvizClient:
         Args:
             serial (str): The camera serial number.
             encrypt_pwd (str | None): This is always none.
-            msg_auth_code (int | None): The 2FA code.
+            msg_auth_code (str | int | None): The 2FA code.
             sender_type (int): The sender type. Defaults to 0. Needs to be 3 when returning 2FA code.
             max_retries (int): The maximum number of retries. Defaults to 0.
 
@@ -2828,7 +2905,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve users associated with a door lock device."""
 
         json_output = self._request_json(
@@ -2840,6 +2917,74 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not get door lock users")
         return json_output
 
+    def get_terminals(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Retrieve account terminal information."""
+
+        return self._request_json(
+            "GET",
+            API_ENDPOINT_TERMINAL_INFO,
+            params={"limit": limit, "offset": offset},
+            retry_401=True,
+            max_retries=max_retries,
+        )
+
+    def get_latest_terminal_bind(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        terminal_name: str | None = "Hassio",
+        max_retries: int = 0,
+    ) -> tuple[str, str]:
+        """Return the latest terminal bind code and terminal user name."""
+
+        json_output = self.get_terminals(
+            limit=limit,
+            offset=offset,
+            max_retries=max_retries,
+        )
+        terminals = json_output.get("terminals")
+        if not isinstance(terminals, list) or not terminals:
+            raise PyEzvizError("No terminal information found")
+
+        terminal_items = [
+            item
+            for item in terminals
+            if isinstance(item, Mapping)
+            and str(item.get("sign") or "").strip()
+            and str(item.get("userId") or "").strip()
+        ]
+        if not terminal_items:
+            raise PyEzvizError("No terminal bind information found")
+
+        if terminal_name:
+            expected_name = terminal_name.casefold()
+            terminal_items = [
+                item
+                for item in terminal_items
+                if str(item.get("name") or item.get("terminalName") or "").casefold()
+                == expected_name
+            ]
+            if not terminal_items:
+                raise PyEzvizError(f"No terminal bind information found for {terminal_name}")
+
+        terminal = max(
+            terminal_items,
+            key=lambda item: str(
+                item.get("lastModifytime") or item.get("lastModifyTime") or ""
+            ),
+        )
+        sign = str(terminal["sign"]).strip()
+        terminal_user_id = str(terminal["userId"]).strip()
+        user_name = terminal.get("name") or terminal.get("terminalName") or terminal_user_id
+        return f"{sign}{terminal_user_id}", str(user_name)
+
     def remote_unlock(
         self,
         serial: str,
@@ -2850,6 +2995,9 @@ class EzvizClient:
         local_index: str | int | None = None,
         stream_token: str | None = None,
         lock_type: str | None = None,
+        bind_code: str | None = None,
+        terminal_filter_name: str | None = "Hassio",
+        use_terminal_bind: bool = True,
     ) -> bool:
         """Sends a remote command to unlock a specific lock.
 
@@ -2864,6 +3012,15 @@ class EzvizClient:
             stream_token (str, optional): Stream token associated with the lock if
                 provided by the API. Defaults to empty string when omitted.
             lock_type (str, optional): Optional lock type hint used by some devices.
+            bind_code (str, optional): Explicit bind code. When omitted, the latest
+                terminal bind code is used if available, otherwise the legacy
+                ``FEATURE_CODE + user_id`` bind code is used.
+            terminal_filter_name (str, optional): Terminal name to prefer when
+                resolving an implicit bind code. Defaults to ``"Hassio"`` to match
+                the library login terminal. Pass ``None`` to use the newest valid
+                terminal regardless of name.
+            use_terminal_bind (bool): Whether to try terminal-derived bind codes
+                before falling back to the legacy bind code.
 
         Raises:
             PyEzvizError: If max retries are exceeded or if the response indicates failure.
@@ -2875,11 +3032,28 @@ class EzvizClient:
         """
         route_resource = resource_id or "Video"
         route_index = str(local_index if local_index is not None else 1)
+        effective_bind_code = bind_code
+        effective_user_name = user_id
+        if effective_bind_code is None and use_terminal_bind:
+            try:
+                effective_bind_code, effective_user_name = self.get_latest_terminal_bind(
+                    terminal_name=terminal_filter_name
+                )
+            except (requests.RequestException, HTTPError, PyEzvizError) as err:
+                _LOGGER.debug(
+                    "Terminal bind unavailable for %s, using legacy bind code: %s",
+                    serial,
+                    err,
+                )
+
+        if effective_bind_code is None:
+            effective_bind_code = f"{FEATURE_CODE}{user_id}"
+
         un_lock_info: dict[str, Any] = {
-            "bindCode": f"{FEATURE_CODE}{user_id}",
+            "bindCode": effective_bind_code,
             "lockNo": lock_no,
             "streamToken": stream_token or "",
-            "userName": user_id,
+            "userName": effective_user_name,
         }
         if lock_type:
             un_lock_info["type"] = lock_type
@@ -2943,7 +3117,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Check progress of a remote unbind request."""
 
         json_output = self._request_json(
@@ -2955,14 +3129,16 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not get unbind progress")
         return json_output
 
-    def login(self, sms_code: int | None = None) -> dict[Any, Any]:
+    def login(self, sms_code: int | None = None) -> JsonDict:
         """Get or refresh ezviz login token."""
-        if self._token["session_id"] and self._token["rf_session_id"]:
+        session_id = self._token.get("session_id")
+        refresh_session_id = self._token.get("rf_session_id")
+        if session_id and refresh_session_id:
             try:
                 req = self._session.put(
                     url=f"https://{self._token['api_url']}{API_ENDPOINT_REFRESH_SESSION_ID}",
                     data={
-                        "refreshSessionId": self._token["rf_session_id"],
+                        "refreshSessionId": refresh_session_id,
                         "featureCode": FEATURE_CODE,
                     },
                     timeout=self._timeout,
@@ -3129,7 +3305,7 @@ class EzvizClient:
         visual_alarm: int | None = None,
         sound_mode: int | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Set defence mode for a specific group with optional sound/visual flags."""
 
         data: dict[str, Any] = {
@@ -3287,7 +3463,7 @@ class EzvizClient:
         command: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Send a mirror command using the basics API."""
 
         path = f"{API_ENDPOINT_DEVICE_BASICS}{serial}/{channel}/{command}/mirror"
@@ -3452,7 +3628,7 @@ class EzvizClient:
         if max_retries > MAX_RETRIES:
             raise PyEzvizError("Can't gather proper data. Max retries exceeded.")
 
-        if luminance not in range(1, 100):
+        if luminance not in range(1, 101):
             raise PyEzvizError(
                 "Range of luminance is 1-100, got " + str(luminance) + "."
             )
@@ -3574,7 +3750,7 @@ class EzvizClient:
         channel: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Get motion detection sensitivity via v1 devconfig endpoint."""
 
         json_output = self._request_json(
@@ -3592,7 +3768,7 @@ class EzvizClient:
         channel: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Get motion detection sensitivity for DP1S devices."""
 
         json_output = self._request_json(
@@ -3670,7 +3846,7 @@ class EzvizClient:
         key: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch a specific configuration key for an A1S detector."""
 
         path = (
@@ -3694,7 +3870,7 @@ class EzvizClient:
         value: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update a configuration key for an A1S detector."""
 
         path = (
@@ -3716,7 +3892,7 @@ class EzvizClient:
         detector_serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve status/details for an A1S detector."""
 
         path = f"{API_ENDPOINT_SPECIAL_BIZS_A1S}detector/{detector_serial}"
@@ -3735,7 +3911,7 @@ class EzvizClient:
         child_device_serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Return radio signal metrics for a detector connected to a device."""
 
         path = f"{API_ENDPOINT_SPECIAL_BIZS_A1S}{device_serial}/radioSignal"
@@ -3755,7 +3931,7 @@ class EzvizClient:
         version: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch voice configuration metadata for a product."""
 
         params = {"productId": product_id, "version": version}
@@ -3776,7 +3952,7 @@ class EzvizClient:
         *,
         local_index: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve uploaded custom voice prompts for a device."""
 
         params: dict[str, Any] = {"deviceSerial": serial}
@@ -3801,7 +3977,7 @@ class EzvizClient:
         *,
         local_index: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Upload metadata for a new custom voice prompt."""
 
         data: dict[str, Any] = {
@@ -3830,7 +4006,7 @@ class EzvizClient:
         local_index: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Upload a shared voice with explicit local index, mirroring the mobile API."""
 
         return self.add_voice_info(
@@ -3849,7 +4025,7 @@ class EzvizClient:
         *,
         local_index: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update metadata for an existing voice prompt."""
 
         data: dict[str, Any] = {
@@ -3878,7 +4054,7 @@ class EzvizClient:
         local_index: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Alias for updating shared voices that ensures local index is supplied."""
 
         return self.set_voice_info(
@@ -3897,7 +4073,7 @@ class EzvizClient:
         voice_url: str | None = None,
         local_index: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Remove a voice prompt from a device."""
 
         params: dict[str, Any] = {
@@ -3927,7 +4103,7 @@ class EzvizClient:
         local_index: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Alias for deleting shared voices with required parameters."""
 
         return self.delete_voice_info(
@@ -3943,7 +4119,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Return whistle configuration per channel for a device."""
 
         json_output = self._request_json(
@@ -3960,7 +4136,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Return whistle configuration at the device level."""
 
         json_output = self._request_json(
@@ -3978,7 +4154,7 @@ class EzvizClient:
         channel_whistles: list[Mapping[str, Any]] | list[dict[str, Any]],
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Configure whistle behaviour for individual channels."""
 
         if not channel_whistles:
@@ -4016,7 +4192,7 @@ class EzvizClient:
         duration: int,
         volume: int,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Configure whistle behaviour at the device level."""
 
         params = {
@@ -4040,7 +4216,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Stop any ongoing whistle sound."""
 
         json_output = self._request_json(
@@ -4059,7 +4235,7 @@ class EzvizClient:
         sleep_type: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Request additional awake time for a battery-powered device."""
 
         path = f"{API_ENDPOINT_SPECIAL_BIZS_V1_BATTERY}{serial}/{channel}/{sleep_type}/sleep"
@@ -4078,7 +4254,7 @@ class EzvizClient:
         channel: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch chime configuration for a specific channel."""
 
         json_output = self._request_json(
@@ -4098,7 +4274,7 @@ class EzvizClient:
         sound_type: int,
         duration: int,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update chime type and duration for a channel."""
 
         data = {
@@ -4124,7 +4300,7 @@ class EzvizClient:
         switch_type: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Call the legacy setSwitchEnableReq endpoint."""
 
         params = {
@@ -4146,7 +4322,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Return metadata for a managed device (e.g. base station)."""
 
         path = f"{API_ENDPOINT_MANAGED_DEVICE_BASE}{serial}/base"
@@ -4164,7 +4340,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """List IPC sub-devices that belong to a managed device."""
 
         path = f"{API_ENDPOINT_MANAGED_DEVICE_BASE}{serial}/ipcs"
@@ -4182,7 +4358,7 @@ class EzvizClient:
         serials: list[str] | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch online/offline status for one or more devices."""
 
         if isinstance(serials, (list, tuple, set)):
@@ -4205,7 +4381,7 @@ class EzvizClient:
         serials: list[str] | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve KMS secret key metadata for devices."""
 
         if isinstance(serials, (list, tuple, set)):
@@ -4229,7 +4405,7 @@ class EzvizClient:
         form_data: Mapping[str, Any] | bytes | bytearray | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Batch query encrypt keys for devices, matching the mobile client's risk API."""
 
         headers = {
@@ -4265,7 +4441,7 @@ class EzvizClient:
         serials: list[str] | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve P2P info via the device-scoped endpoint."""
 
         if isinstance(serials, (list, tuple, set)):
@@ -4288,7 +4464,7 @@ class EzvizClient:
         serials: list[str] | str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve P2P server info via the userdevices endpoint."""
 
         if isinstance(serials, (list, tuple, set)):
@@ -4310,7 +4486,7 @@ class EzvizClient:
         self,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Check firmware upgrade eligibility rules."""
 
         json_output = self._request_json(
@@ -4326,7 +4502,7 @@ class EzvizClient:
         self,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Return the current auto-upgrade switch settings."""
 
         json_output = self._request_json(
@@ -4344,7 +4520,7 @@ class EzvizClient:
         time_type: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update the auto-upgrade switch configuration."""
 
         data = {
@@ -4367,7 +4543,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Retrieve SD-card black level data for a device."""
 
         json_output = self._request_json(
@@ -4386,7 +4562,7 @@ class EzvizClient:
         timing_plan_type: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch timing plan information for a device/channel."""
 
         params = {
@@ -4413,7 +4589,7 @@ class EzvizClient:
         timer_defence_qos: Any,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Update timing plan configuration."""
 
         params: dict[str, Any] = {
@@ -4447,7 +4623,7 @@ class EzvizClient:
         *,
         size: int = 20,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Search recorded video clips for a device."""
 
         params = {
@@ -4468,13 +4644,339 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not search records")
         return json_output
 
+    def search_records_v2(
+        self,
+        serial: str,
+        channel: int,
+        start_time: str,
+        stop_time: str,
+        *,
+        size: int = 20,
+        sort_by: int = 0,
+        require_label: int = 0,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Search SD-card playback records with the app's v2 record endpoint."""
+
+        params = {
+            "deviceSerial": serial,
+            "channelNo": channel,
+            "startTime": start_time,
+            "stopTime": stop_time,
+            "size": size,
+            "sortBy": sort_by,
+            "requireLabel": require_label,
+        }
+        json_output = self._request_json(
+            "GET",
+            API_ENDPOINT_STREAMING_RECORDS_V2,
+            params=params,
+            retry_401=True,
+            max_retries=max_retries,
+        )
+        self._ensure_ok(json_output, "Could not search v2 records")
+        return json_output
+
+    def search_common_records(
+        self,
+        serial: str,
+        channel: int,
+        start_time: str,
+        stop_time: str,
+        *,
+        channel_serial: str | None = None,
+        record_type: int = 0,
+        size: int = 20,
+        version: int = 2,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Search common SD-card playback records.
+
+        This mirrors the EZVIZ app's ``PlaybackRecordApi.searchRecordV3`` path.
+        """
+
+        params: dict[str, Any] = {
+            "deviceSerial": serial,
+            "channelNo": channel,
+            "startTime": start_time,
+            "stopTime": stop_time,
+            "recordType": record_type,
+            "size": size,
+            "version": version,
+        }
+        if channel_serial is not None:
+            params["channelSerial"] = channel_serial
+        json_output = self._request_json(
+            "GET",
+            API_ENDPOINT_STREAMING_RECORDS_COMMON,
+            params=params,
+            retry_401=True,
+            max_retries=max_retries,
+        )
+        self._ensure_ok(json_output, "Could not search common records")
+        return json_output
+
+    def search_intelligent_records(
+        self,
+        serial: str,
+        channel: int,
+        start_time: str,
+        stop_time: str,
+        *,
+        version: int = 2,
+        record_filter: str | None = None,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Search intelligent SD-card playback records."""
+
+        params: dict[str, Any] = {
+            "deviceSerial": serial,
+            "channelNo": channel,
+            "startTime": start_time,
+            "stopTime": stop_time,
+            "version": version,
+        }
+        if record_filter is not None:
+            params["filter"] = record_filter
+        json_output = self._request_json(
+            "GET",
+            API_ENDPOINT_STREAMING_RECORDS_INTELLIGENT,
+            params=params,
+            retry_401=True,
+            max_retries=max_retries,
+        )
+        self._ensure_ok(json_output, "Could not search intelligent records")
+        return json_output
+
+    @staticmethod
+    def decode_records_payload(value: str) -> list[Any]:
+        """Decode an EZVIZ base64+zlib JSON record-list payload."""
+
+        try:
+            raw = base64.b64decode(value, validate=True)
+            decoded = zlib.decompress(raw).decode("utf-8").strip()
+            parsed = json.loads(decoded)
+        except (ValueError, zlib.error, UnicodeDecodeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    @classmethod
+    def extract_record_list(cls, payload: Any) -> list[Any]:
+        """Return the first plain or compressed record list in a response."""
+
+        if isinstance(payload, str):
+            return cls.decode_records_payload(payload)
+        if not isinstance(payload, Mapping):
+            return payload if isinstance(payload, list) else []
+
+        records: list[Any] = []
+        for key in ("records", "record", "files", "fileList", "videos", "videoList", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                records = value
+                break
+            if isinstance(value, str):
+                nested = cls.decode_records_payload(value)
+                if nested:
+                    records = nested
+                    break
+            if isinstance(value, Mapping):
+                nested = cls.extract_record_list(value)
+                if nested:
+                    records = nested
+                    break
+        if not records:
+            for value in payload.values():
+                if isinstance(value, Mapping):
+                    nested = cls.extract_record_list(value)
+                    if nested:
+                        records = nested
+                        break
+        return records
+
+    def get_cloud_videos(
+        self,
+        serial: str,
+        channel: int,
+        *,
+        limit: int = 20,
+        video_type: int = 2,
+        support_multi_channel_shared_service: int = 0,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Return cloud video descriptors for a device.
+
+        The EZVIZ app uses this endpoint before native cloud download. Returned
+        items may include ``streamUrl``, ``seqId``, ``storageVersion``,
+        ``fileSize``, ``crypt``, and ``keyChecksum``.
+        """
+
+        params = {
+            "deviceSerial": serial,
+            "channelNo": channel,
+            "limit": limit,
+            "videoType": video_type,
+            "supportMultiChannelSharedService": support_multi_channel_shared_service,
+        }
+        json_output = self._request_json(
+            "GET",
+            API_ENDPOINT_CLOUD_VIDEOS_LIST,
+            params=params,
+            retry_401=True,
+            max_retries=max_retries,
+        )
+        self._ensure_ok(json_output, "Could not get cloud videos")
+        return json_output
+
+    def get_cloud_video_details(
+        self,
+        serial: str,
+        channel: int,
+        videos: Iterable[Mapping[str, Any]],
+        *,
+        support_multi_channel_shared_service: int = 0,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Return detailed cloud video descriptors for selected videos."""
+
+        body = {
+            "deviceSerial": serial,
+            "channelNo": channel,
+            "supportMultiChannelSharedService": support_multi_channel_shared_service,
+            "videos": [
+                {
+                    "seqId": video["seqId"],
+                    "startTime": video["startTime"],
+                    "stopTime": video["stopTime"],
+                    "storageVersion": video.get("storageVersion", 2),
+                }
+                for video in videos
+            ],
+        }
+        json_output = self._request_json(
+            "POST",
+            API_ENDPOINT_CLOUD_VIDEO_DETAILS,
+            json_body=body,
+            retry_401=True,
+            max_retries=max_retries,
+        )
+        self._ensure_ok(json_output, "Could not get cloud video details")
+        return json_output
+
+    def get_camera_ticket_info(
+        self,
+        serial: str,
+        channel: int,
+        *,
+        support_multi_channel_shared_service: int = 0,
+        max_retries: int = 0,
+    ) -> JsonDict:
+        """Return the camera playback ticket used by native cloud storage downloads.
+
+        The official app feeds ``ticketInfo.ticket`` into
+        ``DownloadCloudParam.szTicketToken`` for normal cloud-storage clips.
+        """
+
+        params = {
+            "deviceSerial": serial,
+            "channelNo": channel,
+            "supportMultiChannelSharedService": support_multi_channel_shared_service,
+        }
+        json_output = self._request_json(
+            "GET",
+            API_ENDPOINT_CAMERA_TICKET_INFO,
+            params=params,
+            retry_401=True,
+            max_retries=max_retries,
+        )
+        self._ensure_ok(json_output, "Could not get camera ticket info")
+        return json_output
+
+    @staticmethod
+    def _extract_cloud_video_download_url(video: Mapping[str, Any]) -> str | None:
+        """Return the first direct HTTP(S) video URL in a cloud video descriptor."""
+
+        media_url_keys = {
+            "downloadUrl",
+            "downloadURL",
+            "fileUrl",
+            "fileURL",
+            "playbackUrl",
+            "playbackURL",
+            "videoUrl",
+            "videoURL",
+        }
+        media_container_keys = {
+            "clip",
+            "clips",
+            "download",
+            "downloadInfo",
+            "file",
+            "files",
+            "media",
+            "playback",
+            "playbackInfo",
+            "video",
+            "videos",
+        }
+        queue: list[tuple[Any, bool]] = [(video, False)]
+        while queue:
+            current, is_media_container = queue.pop(0)
+            if isinstance(current, Mapping):
+                for key, value in current.items():
+                    child_is_media_container = is_media_container or key in media_container_keys
+                    if isinstance(value, str):
+                        if key in media_url_keys and value.startswith(("http://", "https://")):
+                            return value
+                        if (
+                            key == "url"
+                            and is_media_container
+                            and value.startswith(("http://", "https://"))
+                        ):
+                            return value
+                    elif isinstance(value, Mapping | list):
+                        queue.append((value, child_is_media_container))
+            elif isinstance(current, list):
+                queue.extend((item, is_media_container) for item in current)
+        return None
+
+    def download_cloud_video(
+        self,
+        video: Mapping[str, Any],
+        *,
+        max_retries: int = 0,
+    ) -> bytes:
+        """Download a cloud video when the descriptor contains a direct HTTP URL.
+
+        Most EZVIZ cloud clip descriptors returned by ``/v3/clouds/videoDetails``
+        expose a native SDK ``streamUrl`` host/port instead of a direct media URL.
+        Those native stream descriptors cannot be downloaded through this helper.
+        """
+
+        url = self._extract_cloud_video_download_url(video)
+        if url is None:
+            stream_url = video.get("streamUrl")
+            suffix = f" Native streamUrl={stream_url!r} requires the EZVIZ SDK path." if stream_url else ""
+            raise PyEzvizError(
+                "Cloud video descriptor does not include a direct HTTP(S) download URL."
+                + suffix
+            )
+
+        resp = self._http_request(
+            "GET",
+            url,
+            retry_401=False,
+            max_retries=max_retries,
+        )
+        return resp.content
+
     def search_device(
         self,
         serial: str,
         *,
         user_ssid: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Find device information by serial."""
 
         headers = dict(self._session.headers)
@@ -4506,7 +5008,7 @@ class EzvizClient:
         end: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Fetch smart outlet switch logs within a time range."""
 
         path = API_ENDPOINT_SMARTHOME_OUTLET_LOG.format(**{"from": start, "to": end})
@@ -4526,7 +5028,7 @@ class EzvizClient:
         detector_serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """List cameras linked to a detector device."""
 
         params = {
@@ -4552,7 +5054,7 @@ class EzvizClient:
         index: int,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Configure microscope lens parameters."""
 
         data = {
@@ -4576,7 +5078,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Accept a device share invitation."""
 
         json_output = self._request_json(
@@ -4594,7 +5096,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Leave a shared device."""
 
         json_output = self._request_json(
@@ -4616,7 +5118,7 @@ class EzvizClient:
         feedback: str,
         pic_url: str | None = None,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Submit feedback to Ezviz support."""
 
         params: dict[str, Any] = {
@@ -4643,7 +5145,7 @@ class EzvizClient:
         serial: str,
         *,
         max_retries: int = 0,
-    ) -> dict:
+    ) -> JsonDict:
         """Trigger device log upload to Ezviz cloud."""
 
         json_output = self._request_json(
@@ -4714,7 +5216,7 @@ class EzvizClient:
         return self._api_get_pagelist(
             page_filter="CLOUD, TIME_PLAN, CONNECTION, SWITCH,"
             "STATUS, WIFI, NODISTURB, KMS,"
-            "P2P, TIME_PLAN, CHANNEL, VTM, DETECTOR,"
+            "P2P, CHANNEL, VTM, DETECTOR,"
             "FEATURE, CUSTOM_TAG, UPGRADE, VIDEO_QUALITY,"
             "QOS, PRODUCTS_INFO, SIM_CARD, MULTI_UPGRADE_EXT,"
             "FEATURE_INFO",

@@ -12,6 +12,8 @@ from .exceptions import AuthTestResultFailed, InvalidHost
 
 _LOGGER = logging.getLogger(__name__)
 
+__test__ = False
+
 
 def genmsg_describe(url: str, seq: int, user_agent: str, auth_seq: str) -> str:
     """Generate RTSP DESCRIBE request message."""
@@ -37,6 +39,8 @@ class RTSPDetails(TypedDict):
 
 class TestRTSPAuth:
     """Test RTSP credentials against an RTSP server."""
+
+    __test__ = False
 
     _rtsp_details: RTSPDetails
 
@@ -113,7 +117,7 @@ class TestRTSPAuth:
         describe = genmsg_describe(
             url, seq, self._rtsp_details["defaultUserAgent"], auth_seq
         )
-        _LOGGER.debug("RTSP DESCRIBE (basic):\n%s", describe)
+        _LOGGER.debug("RTSP DESCRIBE (basic) request prepared for %s", url)
         session.send(describe.encode())
         msg1: bytes = session.recv(self._rtsp_details["bufLen"])
         seq += 1
@@ -142,7 +146,7 @@ class TestRTSPAuth:
             describe = genmsg_describe(
                 url, seq, self._rtsp_details["defaultUserAgent"], auth_seq
             )
-            _LOGGER.debug("RTSP DESCRIBE (digest):\n%s", describe)
+            _LOGGER.debug("RTSP DESCRIBE (digest) request prepared for %s", url)
             session.send(describe.encode())
             msg1 = session.recv(self._rtsp_details["bufLen"])
             decoded = msg1.decode()
