@@ -28,7 +28,7 @@ PULSE_SECONDS = 3
 
 # Simple binary sensors mapped directly to coordinator data keys
 SIMPLE_MAP: list[tuple[str, str, BinarySensorDeviceClass]] = [
-    ("Motion_Trigger", "motion_trigger", BinarySensorDeviceClass.MOTION),
+    ("motion", "motion_trigger", BinarySensorDeviceClass.MOTION),
 ]
 
 # Alarm sensors that trigger for PULSE_SECONDS when specific alarm names appear

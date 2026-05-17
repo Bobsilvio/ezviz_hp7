@@ -121,7 +121,7 @@ class Hp7Api:
         self.ensure_client()
         try:
             if self._client:
-                dev = self._client.get_device_infos(serial).get(serial, {})
+                self._client.get_device_infos(serial)
                 _LOGGER.debug("EZVIZ HP7 device %s capabilities detected", serial)
         except (KeyError, AttributeError, ValueError) as exc:
             _LOGGER.debug("Failed to detect capabilities for %s: %s", serial, exc)
@@ -148,7 +148,8 @@ class Hp7Api:
         
         result: dict[str, dict[str, Any]] = {}
         for serial, data in devices.items():
-            name = data.get("name") or data.get("deviceName") or "Device"
+            device_info = data.get("deviceInfos", {})
+            name = device_info.get("name") or device_info.get("deviceName") or "Device"
             result[serial] = {"device_name": name}
         return result
 
