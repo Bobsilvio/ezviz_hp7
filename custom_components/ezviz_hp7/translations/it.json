@@ -111,6 +111,11 @@
       "unlock_door": {
         "name": "Sblocca Porta"
       }
+    },
+    "switch": {
+      "chime_sound": {
+        "name": "Suono Monitor"
+      }
     }
   },
   "services": {

@@ -1,6 +1,7 @@
 """EZVIZ HP7 API client."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -33,7 +34,7 @@ class Hp7Api:
         token: dict[str, Any] | None = None,
     ) -> None:
         """Initialize EZVIZ HP7 API client.
-        
+
         Args:
             username: EZVIZ account username.
             password: EZVIZ account password.
@@ -53,7 +54,7 @@ class Hp7Api:
     @property
     def token(self) -> dict[str, Any] | None:
         """Get the current authentication token.
-        
+
         Returns:
             Authentication token dict or None if not authenticated.
         """
@@ -61,9 +62,9 @@ class Hp7Api:
 
     def ensure_client(self) -> None:
         """Ensure EzvizClient is initialized.
-        
+
         Creates the client if it doesn't exist and handles token authentication.
-        
+
         Raises:
             RuntimeError: If client initialization fails.
         """
@@ -86,13 +87,13 @@ class Hp7Api:
 
     def _login_and_store_token(self) -> None:
         """Authenticate with EZVIZ server and store token.
-        
+
         Raises:
             ValueError: If login fails.
         """
         if not self._client:
             raise RuntimeError("Client not initialized")
-            
+
         try:
             self._token = self._client.login()
             _LOGGER.debug("EZVIZ HP7 authentication successful")
@@ -102,10 +103,10 @@ class Hp7Api:
 
     def login(self) -> bool:
         """Authenticate with EZVIZ server.
-        
+
         Returns:
             True if authentication was successful.
-            
+
         Raises:
             RuntimeError: If authentication fails.
         """
@@ -114,7 +115,7 @@ class Hp7Api:
 
     def detect_capabilities(self, serial: str) -> None:
         """Detect device capabilities from EZVIZ API.
-        
+
         Args:
             serial: Device serial number.
         """
@@ -125,27 +126,27 @@ class Hp7Api:
                 _LOGGER.debug("EZVIZ HP7 device %s capabilities detected", serial)
         except (KeyError, AttributeError, ValueError) as exc:
             _LOGGER.debug("Failed to detect capabilities for %s: %s", serial, exc)
-        
+
         # Set default capabilities
         self.supports_door = True
         self.supports_gate = True
 
     def list_devices(self) -> dict[str, dict[str, Any]]:
         """List all paired EZVIZ devices.
-        
+
         Returns:
             Dictionary mapping device serial to device info.
         """
         self.ensure_client()
         if not self._client:
             return {}
-            
+
         try:
             devices = self._client.get_device_infos()
         except (KeyError, AttributeError, ValueError) as exc:
             _LOGGER.warning("Failed to list devices: %s", exc)
             return {}
-        
+
         result: dict[str, dict[str, Any]] = {}
         for serial, data in devices.items():
             device_info = data.get("deviceInfos", {})
@@ -165,18 +166,18 @@ class Hp7Api:
 
     def _try_unlock(self, serial: str, lock_no: int) -> bool:
         """Attempt to unlock a specific lock.
-        
+
         Args:
             serial: Device serial number.
             lock_no: Lock number to unlock.
-            
+
         Returns:
             True if unlock was successful.
         """
         self.ensure_client()
         if not self._token or not self._client:
             return False
-            
+
         user_id = self._token.get("username") or self._username
         try:
             self._client.remote_unlock(serial, user_id, lock_no)
@@ -190,10 +191,10 @@ class Hp7Api:
 
     def unlock_door(self, serial: str) -> bool:
         """Unlock the door lock.
-        
+
         Args:
             serial: Device serial number.
-            
+
         Returns:
             True if unlock was successful.
         """
@@ -203,10 +204,10 @@ class Hp7Api:
 
     def unlock_gate(self, serial: str) -> bool:
         """Unlock the gate lock.
-        
+
         Args:
             serial: Device serial number.
-            
+
         Returns:
             True if unlock was successful.
         """
@@ -214,27 +215,105 @@ class Hp7Api:
             serial, DEFAULT_DOOR_LOCK_NO
         )
 
-    def get_status(self, serial: str) -> dict[str, Any]:
-        """Get current device status.
-        
+    def _set_chime(self, serial: str, doorbell_enable: int) -> bool:
+        """Set ChimeMusic config via PUT with query params (no body).
+
         Args:
             serial: Device serial number.
-            
+            doorbell_enable: 1 to enable, 0 to disable.
+
+        Returns:
+            True if the API call was successful.
+        """
+        self.ensure_client()
+        if not self._client:
+            return False
+        value = json.dumps(
+            {"doorbell": 10, "pir": 0, "volume": 7,
+             "doorbell_enable": doorbell_enable, "pir_enable": 0},
+            separators=(",", ":"),
+        )
+        url = (
+            f"https://{self._url}/v3/devconfig/v1/keyValue"
+            f"/{serial}/1/op"
+        )
+        params = {"key": "ChimeMusic", "value": value}
+        try:
+            resp = self._client._session.put(url, params=params, timeout=15)
+            resp.raise_for_status()
+            return True
+        except Exception as exc:
+            _LOGGER.error("EZVIZ HP7: _set_chime failed: %s", exc)
+            return False
+
+    def enable_chime(self, serial: str) -> bool:
+        """Enable monitor chime sound (doorbell_enable=1).
+
+        Args:
+            serial: Device serial number.
+
+        Returns:
+            True if successful.
+        """
+        return self._set_chime(serial, doorbell_enable=1)
+
+    def disable_chime(self, serial: str) -> bool:
+        """Disable monitor chime sound (doorbell_enable=0).
+
+        Args:
+            serial: Device serial number.
+
+        Returns:
+            True if successful.
+        """
+        return self._set_chime(serial, doorbell_enable=0)
+
+    def get_chime_state(self, serial: str) -> bool | None:
+        """Read current ChimeMusic config and return doorbell_enable state.
+
+        Args:
+            serial: Device serial number.
+
+        Returns:
+            True if chime is enabled, False if disabled, None on error.
+        """
+        self.ensure_client()
+        if not self._client:
+            return None
+        try:
+            result = self._client.get_dev_config(serial, 1, "ChimeMusic")
+            # Extract the value field – API returns it as "valueInfo"
+            value = result.get("valueInfo") or result.get("value")
+            if isinstance(value, str):
+                value = json.loads(value)
+            if isinstance(value, dict):
+                return value.get("doorbell_enable") in (1, "1", True)
+            return None
+        except Exception as exc:
+            _LOGGER.warning("EZVIZ HP7: get_chime_state failed: %s", exc)
+            return None
+
+    def get_status(self, serial: str) -> dict[str, Any]:
+        """Get current device status.
+
+        Args:
+            serial: Device serial number.
+
         Returns:
             Dictionary with device status and sensor readings.
         """
         self.ensure_client()
         if not self._client:
             return {}
-            
+
         try:
             camera = EzvizCamera(self._client, serial)
             cam_status = camera.status(refresh=True)
             wifi_info = cam_status.get("WIFI", {})
 
             _LOGGER.debug("Device status received for %s", serial)
-            
-            return {
+
+            status_data = {
                 "name": cam_status.get("name"),
                 "version": cam_status.get("version"),
                 "upgrade_available": cam_status.get("upgrade_available"),
@@ -250,6 +329,13 @@ class Hp7Api:
                 "signal": wifi_info.get("signal"),
                 "local_ip": cam_status.get("local_ip") or wifi_info.get("address"),
             }
+
+            # Read chime state (won't break polling if it fails)
+            chime_on = self.get_chime_state(serial)
+            if chime_on is not None:
+                status_data["chime_is_on"] = chime_on
+
+            return status_data
 
         except (KeyError, AttributeError, ValueError, Exception) as exc:
             _LOGGER.warning("Failed to get device status for %s: %s", serial, exc)

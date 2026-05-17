@@ -111,6 +111,11 @@
       "unlock_door": {
         "name": "Unlock Door"
       }
+    },
+    "switch": {
+      "chime_sound": {
+        "name": "Monitor Sound"
+      }
     }
   },
   "services": {

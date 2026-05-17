@@ -111,6 +111,11 @@
       "unlock_door": {
         "name": "Desbloquear Puerta"
       }
+    },
+    "switch": {
+      "chime_sound": {
+        "name": "Sonido Monitor"
+      }
     }
   },
   "services": {

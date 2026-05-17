@@ -111,6 +111,11 @@
       "unlock_door": {
         "name": "Ouvrir portillon"
       }
+    },
+    "switch": {
+      "chime_sound": {
+        "name": "Son du Moniteur"
+      }
     }
   },
   "services": {
