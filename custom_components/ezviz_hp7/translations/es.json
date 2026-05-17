@@ -110,7 +110,7 @@
       },
       "unlock_door": {
         "name": "Desbloquear Puerta"
-      },
+      }
     }
   },
   "services": {

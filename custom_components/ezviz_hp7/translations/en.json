@@ -110,7 +110,7 @@
       },
       "unlock_door": {
         "name": "Unlock Door"
-      },
+      }
     }
   },
   "services": {

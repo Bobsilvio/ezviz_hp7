@@ -97,7 +97,7 @@
       },
       "unlock_door": {
         "name": "Sblocca Porta"
-      },
+      }
     }
   },
   "services": {
