@@ -46,7 +46,7 @@ class EzvizHp7ChimeSwitch(CoordinatorEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         """Return current chime state from coordinator data."""
         data = self.coordinator.data or {}
-        return data.get("chime_is_on", True)
+        return data.get("chime_is_on")
 
     async def async_turn_on(self, **kwargs) -> None:
         """Enable monitor chime sound."""

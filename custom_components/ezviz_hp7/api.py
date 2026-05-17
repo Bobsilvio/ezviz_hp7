@@ -5,6 +5,8 @@ import json
 import logging
 from typing import Any
 
+from requests.exceptions import RequestException
+
 from .pylocalapi.client import EzvizClient
 from .pylocalapi.camera import EzvizCamera
 
@@ -215,24 +217,41 @@ class Hp7Api:
             serial, DEFAULT_DOOR_LOCK_NO
         )
 
+    _CHIME_DEFAULTS = {
+        "doorbell": 10,
+        "pir": 0,
+        "volume": 7,
+        "doorbell_enable": 1,
+        "pir_enable": 0,
+    }
+
+    def _get_chime_config(self, serial: str) -> dict[str, Any] | None:
+        """Fetch full ChimeMusic config dict, or None on error."""
+        self.ensure_client()
+        if not self._client:
+            return None
+        try:
+            result = self._client.get_dev_config(serial, 1, "ChimeMusic")
+        except (KeyError, AttributeError, ValueError, RequestException) as exc:
+            _LOGGER.warning("EZVIZ HP7: get_dev_config(ChimeMusic) failed: %s", exc)
+            return None
+        value = result.get("valueInfo") or result.get("value")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError as exc:
+                _LOGGER.warning("EZVIZ HP7: ChimeMusic value parse failed: %s", exc)
+                return None
+        return value if isinstance(value, dict) else None
+
     def _set_chime(self, serial: str, doorbell_enable: int) -> bool:
-        """Set ChimeMusic config via PUT with query params (no body).
-
-        Args:
-            serial: Device serial number.
-            doorbell_enable: 1 to enable, 0 to disable.
-
-        Returns:
-            True if the API call was successful.
-        """
+        """Set ChimeMusic doorbell_enable, preserving other fields."""
         self.ensure_client()
         if not self._client:
             return False
-        value = json.dumps(
-            {"doorbell": 10, "pir": 0, "volume": 7,
-             "doorbell_enable": doorbell_enable, "pir_enable": 0},
-            separators=(",", ":"),
-        )
+        current = self._get_chime_config(serial) or {}
+        config = {**self._CHIME_DEFAULTS, **current, "doorbell_enable": doorbell_enable}
+        value = json.dumps(config, separators=(",", ":"))
         url = (
             f"https://{self._url}/v3/devconfig/v1/keyValue"
             f"/{serial}/1/op"
@@ -242,56 +261,24 @@ class Hp7Api:
             resp = self._client._session.put(url, params=params, timeout=15)
             resp.raise_for_status()
             return True
-        except Exception as exc:
+        except (RequestException, ValueError) as exc:
             _LOGGER.error("EZVIZ HP7: _set_chime failed: %s", exc)
             return False
 
     def enable_chime(self, serial: str) -> bool:
-        """Enable monitor chime sound (doorbell_enable=1).
-
-        Args:
-            serial: Device serial number.
-
-        Returns:
-            True if successful.
-        """
+        """Enable monitor chime sound (doorbell_enable=1)."""
         return self._set_chime(serial, doorbell_enable=1)
 
     def disable_chime(self, serial: str) -> bool:
-        """Disable monitor chime sound (doorbell_enable=0).
-
-        Args:
-            serial: Device serial number.
-
-        Returns:
-            True if successful.
-        """
+        """Disable monitor chime sound (doorbell_enable=0)."""
         return self._set_chime(serial, doorbell_enable=0)
 
     def get_chime_state(self, serial: str) -> bool | None:
-        """Read current ChimeMusic config and return doorbell_enable state.
-
-        Args:
-            serial: Device serial number.
-
-        Returns:
-            True if chime is enabled, False if disabled, None on error.
-        """
-        self.ensure_client()
-        if not self._client:
+        """Return doorbell_enable state (True/False), or None on error."""
+        config = self._get_chime_config(serial)
+        if config is None:
             return None
-        try:
-            result = self._client.get_dev_config(serial, 1, "ChimeMusic")
-            # Extract the value field – API returns it as "valueInfo"
-            value = result.get("valueInfo") or result.get("value")
-            if isinstance(value, str):
-                value = json.loads(value)
-            if isinstance(value, dict):
-                return value.get("doorbell_enable") in (1, "1", True)
-            return None
-        except Exception as exc:
-            _LOGGER.warning("EZVIZ HP7: get_chime_state failed: %s", exc)
-            return None
+        return config.get("doorbell_enable") in (1, "1", True)
 
     def get_status(self, serial: str) -> dict[str, Any]:
         """Get current device status.
@@ -337,6 +324,6 @@ class Hp7Api:
 
             return status_data
 
-        except (KeyError, AttributeError, ValueError, Exception) as exc:
+        except (KeyError, AttributeError, ValueError, TypeError, RequestException) as exc:
             _LOGGER.warning("Failed to get device status for %s: %s", serial, exc)
             return {}
