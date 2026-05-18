@@ -19,71 +19,91 @@ Don't forget to follow me on social media:
 
 # Home Assistant Integration for EZVIZ HP7 Intercom
 
-This is a **custom Home Assistant integration** that adds support for the **EZVIZ HP7 video intercom**.  
-It allows you to **unlock the door and the gate remotely**, monitor device status, and expose the main functions of the HP7 within your Home Assistant environment.
+Custom Home Assistant integration for the **EZVIZ HP7 video intercom**.
+Unlock door/gate remotely, enable/disable the monitor chime, view the last-alarm snapshot, and expose device sensors for automations and dashboards.
+
+- **Version:** 0.4.0
+- **Minimum Home Assistant:** 2025.9.0
+- **Languages:** Italian, English, Spanish, French (fallback English)
 
 ---
 
-NOTE:
+## Note
 
-If you're having trouble logging in, please note that EZVIZ only allows you to have 10 devices connected:
+EZVIZ allows only **10 active devices per account**. If login fails:
 
-EZVIZ -> User -> Login settings -> Manage terminals
+```
+EZVIZ app → User → Login settings → Manage terminals
+```
 
-Delete any unused devices or free up at least 1 space.
+Remove unused devices to free at least one slot.
 
 ---
 
 ## ✨ Features
 
-- Discover and register your EZVIZ HP7 device automatically.
-- Control:
-  - 🔑 Unlock **door** (lock #2 by default).
-  - 🚪 Unlock **gate** (lock #1 by default).
-- Retrieve device information (firmware, version, online status, Wi-Fi signal, etc.).
-- Expose useful entities in Home Assistant for automation and dashboards.
-- Compatible with **multiple regions** (EU/US).
+- Auto-discovery and registration of paired EZVIZ HP7 devices.
+- **Buttons**
+  - 🔑 Unlock **door** (lock #2 by default)
+  - 🚪 Unlock **gate** (lock #1 by default)
+- **Switch**
+  - 🔔 Monitor chime sound (enable/disable doorbell on the indoor monitor)
+- **Camera**
+  - 📷 Last-alarm snapshot (fetched from EZVIZ cloud)
+- **Sensors**
+  - Device name, firmware version, online/offline status
+  - Wi-Fi signal (%), SSID, local IP, WAN IP
+  - Motion state, last alarm timestamp, alarm name, seconds since last trigger
+- **Binary sensors**
+  - Motion (`device_class: motion`)
+  - Smart Detection Alarm, Intelligent Detection Alarm
+  - Doorbell ringing, Gate open, Lock unlocked (pulse 3s)
+- **Services**
+  - `ezviz_hp7.unlock_door`
+  - `ezviz_hp7.unlock_gate`
+- **Regions:** `eu`, `us`, `cn`, `as`, `sa`, `ru`
 
 ---
 
 ## 📦 Installation via HACS
 
-1. Open Home Assistant  
-2. Go to **HACS > Integrations > Custom repositories**  
-3. Add: `https://github.com/Bobsilvio/ezviz_hp7` with type `Integration`  
-4. Search for `Ezviz Hp7` and install it  
-5. Restart Home Assistant  
-6. Go to **Settings > Devices & Services** and add the integration
+1. Open Home Assistant
+2. Go to **HACS → Integrations → Custom repositories**
+3. Add `https://github.com/Bobsilvio/ezviz_hp7` with type `Integration`
+4. Search for `Ezviz Hp7` and install
+5. Restart Home Assistant
+6. Go to **Settings → Devices & Services** and add the integration
 
-## 📦 Installation simple
+## 📦 One-click install
+
 [![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=bobsilvio&repository=ezviz_hp7&category=integration)
 
 ---
 
 ## ⚙️ Configuration
 
-1. In Home Assistant, go to **Settings → Devices & Services → Add Integration**.
+1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **EZVIZ HP7**.
 3. Enter your **EZVIZ account credentials**:
-   - **Username** (email used for EZVIZ app login).
-   - **Password**.
-   - **Region** (usually `eu` for Europe, `us` for North America).
+   - **Username** (email used for the EZVIZ app)
+   - **Password**
+   - **Region** (one of `eu`, `us`, `cn`, `as`, `sa`, `ru`)
 
-The integration will log in through the EZVIZ API and automatically detect your HP7 device.
+The integration logs in through the EZVIZ API and automatically detects the HP7 device.
 
 ---
 
 ## 🛠 Usage
 
-Once set up, you will see:
-- A device card for your **EZVIZ HP7 intercom**.
-- Two services exposed:
-  - `ezviz_hp7.unlock_door`
-  - `ezviz_hp7.unlock_gate`
+After setup, a device card for the **EZVIZ HP7 intercom** appears with the entities listed above.
 
-These can be used in **automations, scripts, and dashboards**.
+Two services are exposed for automations:
+
+- `ezviz_hp7.unlock_door`
+- `ezviz_hp7.unlock_gate`
 
 Example automation:
+
 ```yaml
 alias: Unlock gate on RFID card
 trigger:
@@ -100,32 +120,41 @@ action:
 
 ## 🚧 Limitations
 
-- **Live video streaming** is not yet supported inside Home Assistant.  
-  The HP7 uses temporary tickets and relay servers, which are still under investigation.
-- The integration currently supports **one HP7 device per account** (multi-device support planned).
+- **Live video streaming** is not supported. The HP7 uses temporary tickets and relay servers; only still snapshots from the last alarm are exposed via the camera entity.
+- Currently supports **one HP7 device per account** (multi-device support planned).
+- The chime switch reads back state via cloud polling — changes made from the EZVIZ app appear after the next poll cycle.
+
+---
+
+## 🌐 Translations
+
+UI labels and entity states are translated. Currently shipped:
+
+- 🇮🇹 Italian (`it`)
+- 🇬🇧 English (`en`)
+- 🇪🇸 Spanish (`es`)
+- 🇫🇷 French (`fr`)
+
+To add a language, copy `custom_components/ezviz_hp7/translations/en.json` to `<lang>.json`, translate the values, and restart Home Assistant.
 
 ---
 
 ## 🤝 Contributing
 
-Pull requests and issues are welcome!  
-If you encounter bugs or want to suggest new features, open an [issue](../../issues).
+Pull requests and issues welcome. Open an [issue](../../issues) for bugs or feature requests.
 
-This Integration use API from RanierM26 (https://github.com/RenierM26/pyEzvizApi)
+This integration ships a vendored fork of the EZVIZ API client under `custom_components/ezviz_hp7/pylocalapi/`, originally derived from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi).
 
 ---
 
 ## 📜 License
 
-This project is released under a **proprietary license**.  
-It is provided **as-is**, without warranty of any kind.  
-You may use it in your personal Home Assistant installation, but redistribution is not permitted without explicit authorization.
+Released **as-is**, without warranty of any kind.
+Personal Home Assistant use is permitted. Redistribution requires explicit authorization from the author.
 
 ---
 
 ## ☕ Support the project
 
-If you like this integration and want to support further development:  
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/silviosmart )
-
----
+If you like this integration and want to support further development:
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/silviosmart)
