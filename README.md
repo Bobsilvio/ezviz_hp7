@@ -143,7 +143,7 @@ To add a language, copy `custom_components/ezviz_hp7/translations/en.json` to `<
 
 Pull requests and issues welcome. Open an [issue](../../issues) for bugs or feature requests.
 
-This integration ships a vendored fork of the EZVIZ API client under `custom_components/ezviz_hp7/pylocalapi/`, originally derived from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi).
+This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi), vendored locally under `custom_components/ezviz_hp7/pylocalapi/` to pin the version and avoid breaking changes from upstream releases.
 
 ---
 
