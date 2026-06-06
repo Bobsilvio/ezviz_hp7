@@ -1,6 +1,7 @@
 """Data update coordinator for EZVIZ HP7."""
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import timedelta
 from typing import Any, TYPE_CHECKING
@@ -43,23 +44,29 @@ class Hp7Coordinator(DataUpdateCoordinator):
                 (2024.12+) to use async_config_entry_first_refresh; older
                 releases accept it as a no-op kwarg too.
         """
-        # Newer HA expects the entry on the coordinator; older versions
-        # don't know the kwarg, so we try both.
-        try:
-            super().__init__(
-                hass,
-                _LOGGER,
-                name="EZVIZ HP7",
-                update_interval=timedelta(seconds=UPDATE_INTERVAL_SEC),
-                config_entry=config_entry,
-            )
-        except TypeError:
-            super().__init__(
-                hass,
-                _LOGGER,
-                name="EZVIZ HP7",
-                update_interval=timedelta(seconds=UPDATE_INTERVAL_SEC),
-            )
+        # Newer HA (2024.10+) requires DataUpdateCoordinator subclasses to
+        # carry their owning ConfigEntry before async_config_entry_first_refresh
+        # can be used. The kwarg name is `config_entry` — pass it through when
+        # the base class actually declares it, fall back to plain init on
+        # older builds.
+        kwargs: dict[str, Any] = {
+            "name": "EZVIZ HP7",
+            "update_interval": timedelta(seconds=UPDATE_INTERVAL_SEC),
+        }
+        params = inspect.signature(DataUpdateCoordinator.__init__).parameters
+        if "config_entry" in params and config_entry is not None:
+            kwargs["config_entry"] = config_entry
+        super().__init__(hass, _LOGGER, **kwargs)
+
+        # Some HA builds accept the kwarg but don't set the attribute, or
+        # reload paths arrive here without a current_entry context: assign
+        # explicitly so async_config_entry_first_refresh's check passes.
+        if config_entry is not None and getattr(self, "config_entry", None) is None:
+            try:
+                self.config_entry = config_entry  # type: ignore[assignment]
+            except AttributeError:
+                pass
+
         self.api = api
         self.serial = serial
         self.monitor_serial = monitor_serial
