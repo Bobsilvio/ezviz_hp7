@@ -59,7 +59,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Model detection failed (%s): %s", serial, exc)
         model = DEFAULT_MODEL
 
-    coordinator = Hp7Coordinator(hass, api, serial, monitor_serial)
+    coordinator = Hp7Coordinator(
+        hass, api, serial, monitor_serial, config_entry=entry
+    )
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as exc:

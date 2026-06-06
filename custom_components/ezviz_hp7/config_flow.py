@@ -255,9 +255,17 @@ class OptionsFlow(config_entries.OptionsFlow):
                 title="", data={CONF_MONITOR_SERIAL: monitor}
             )
 
+        # Default suggestion: split the camera serial on '-'. EZVIZ HP7
+        # composite serials follow the pattern "<monitor>-<camera>", so the
+        # part before the dash is almost always the indoor monitor serial.
+        camera_serial = self.config_entry.data.get(CONF_SERIAL, "")
+        guess_monitor = ""
+        if isinstance(camera_serial, str) and "-" in camera_serial:
+            guess_monitor = camera_serial.split("-", 1)[0]
+
         current = self.config_entry.options.get(
             CONF_MONITOR_SERIAL,
-            self.config_entry.data.get(CONF_MONITOR_SERIAL, ""),
+            self.config_entry.data.get(CONF_MONITOR_SERIAL, guess_monitor),
         )
         schema = vol.Schema(
             {vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str}

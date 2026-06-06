@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import UPDATE_INTERVAL_SEC
 
 if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from .api import Hp7Api
 
@@ -29,6 +30,7 @@ class Hp7Coordinator(DataUpdateCoordinator):
         api: Hp7Api,
         serial: str,
         monitor_serial: str | None = None,
+        config_entry: ConfigEntry | None = None,
     ) -> None:
         """Initialize coordinator.
 
@@ -37,13 +39,27 @@ class Hp7Coordinator(DataUpdateCoordinator):
             api: EZVIZ HP7 API instance.
             serial: Camera serial number.
             monitor_serial: Optional indoor monitor serial.
+            config_entry: HA config entry. Required by recent HA versions
+                (2024.12+) to use async_config_entry_first_refresh; older
+                releases accept it as a no-op kwarg too.
         """
-        super().__init__(
-            hass,
-            _LOGGER,
-            name="EZVIZ HP7",
-            update_interval=timedelta(seconds=UPDATE_INTERVAL_SEC),
-        )
+        # Newer HA expects the entry on the coordinator; older versions
+        # don't know the kwarg, so we try both.
+        try:
+            super().__init__(
+                hass,
+                _LOGGER,
+                name="EZVIZ HP7",
+                update_interval=timedelta(seconds=UPDATE_INTERVAL_SEC),
+                config_entry=config_entry,
+            )
+        except TypeError:
+            super().__init__(
+                hass,
+                _LOGGER,
+                name="EZVIZ HP7",
+                update_interval=timedelta(seconds=UPDATE_INTERVAL_SEC),
+            )
         self.api = api
         self.serial = serial
         self.monitor_serial = monitor_serial
