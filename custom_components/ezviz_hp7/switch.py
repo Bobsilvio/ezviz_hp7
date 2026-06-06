@@ -28,8 +28,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities.append(EzvizHp7DndSwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7PrivacySwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7DefenceSwitch(coordinator, api, serial, model))
+    entities.append(EzvizHp7LabelLightSwitch(coordinator, api, serial, model))
+    entities.append(EzvizHp7ChimePirSwitch(coordinator, api, serial, model))
 
-    # Per-monitor chime switches (multi-monitor for HP7 bifamigliare).
+    # Per-monitor switches (multi-monitor for HP7 bifamigliare).
     monitors: list[str] = []
     if isinstance(monitor_serial, str) and monitor_serial.strip():
         monitors = [monitor_serial.strip()]
@@ -51,6 +53,22 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 ),
                 translation_key="chime_sound_monitor",
                 model=f"{model} Monitor",
+            )
+        )
+        entities.append(
+            EzvizHp7ChimePirSwitch(
+                coordinator,
+                api,
+                ms,
+                model=f"{model} Monitor",
+                translation_key="chime_pir_monitor",
+                state_lookup=(
+                    lambda data, s=ms: (
+                        data.get("chime_pir_is_on_monitors", {}).get(s)
+                        if isinstance(data.get("chime_pir_is_on_monitors"), dict)
+                        else None
+                    )
+                ),
             )
         )
 
@@ -201,6 +219,79 @@ class EzvizHp7DefenceSwitch(_BaseHp7Switch):
     async def async_turn_off(self, **kwargs) -> None:
         ok = await self.hass.async_add_executor_job(
             self._api.set_defence, self._serial, False
+        )
+        if ok:
+            await self.coordinator.async_request_refresh()
+
+
+class EzvizHp7LabelLightSwitch(_BaseHp7Switch):
+    """Doorbell name-tag LED (CHIME_INDICATOR_LIGHT, switch type 611)."""
+
+    def __init__(self, coordinator, api, serial: str, model: str) -> None:
+        super().__init__(
+            coordinator, api, serial, model, "label_light", "label_light_on"
+        )
+
+    async def async_turn_on(self, **kwargs) -> None:
+        ok = await self.hass.async_add_executor_job(
+            self._api.set_label_light, self._serial, True
+        )
+        if ok:
+            await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        ok = await self.hass.async_add_executor_job(
+            self._api.set_label_light, self._serial, False
+        )
+        if ok:
+            await self.coordinator.async_request_refresh()
+
+
+class EzvizHp7ChimePirSwitch(CoordinatorEntity, SwitchEntity):
+    """Toggle ChimeMusic.pir_enable (PIR motion sound notification)."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator,
+        api,
+        serial: str,
+        *,
+        model: str = "HP7",
+        translation_key: str = "chime_pir",
+        state_lookup: Callable[[dict], Any] | None = None,
+    ) -> None:
+        super().__init__(coordinator)
+        self._api = api
+        self._serial = serial
+        self._model = model
+        self._state_lookup = state_lookup
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{DOMAIN}_{serial}_{translation_key}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
+
+    @property
+    def is_on(self) -> bool | None:
+        data = self.coordinator.data or {}
+        if self._state_lookup is not None:
+            return self._state_lookup(data)
+        return data.get("chime_pir_is_on")
+
+    async def async_turn_on(self, **kwargs) -> None:
+        ok = await self.hass.async_add_executor_job(
+            self._api.set_chime_pir_enable, self._serial, True
+        )
+        if ok:
+            await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        ok = await self.hass.async_add_executor_job(
+            self._api.set_chime_pir_enable, self._serial, False
         )
         if ok:
             await self.coordinator.async_request_refresh()

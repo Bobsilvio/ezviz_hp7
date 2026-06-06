@@ -150,6 +150,15 @@
       },
       "defence": {
         "name": "Armed"
+      },
+      "label_light": {
+        "name": "Name Tag Light"
+      },
+      "chime_pir": {
+        "name": "Motion Sound Alert"
+      },
+      "chime_pir_monitor": {
+        "name": "Monitor Motion Sound Alert"
       }
     },
     "camera": {
@@ -166,6 +175,18 @@
       },
       "chime_volume_monitor": {
         "name": "Monitor Volume"
+      },
+      "chime_ringtone": {
+        "name": "Doorbell Ringtone"
+      },
+      "chime_pir_ringtone": {
+        "name": "Motion Ringtone"
+      },
+      "chime_ringtone_monitor": {
+        "name": "Monitor Doorbell Ringtone"
+      },
+      "chime_pir_ringtone_monitor": {
+        "name": "Monitor Motion Ringtone"
       }
     }
   },

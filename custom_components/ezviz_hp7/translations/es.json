@@ -150,6 +150,15 @@
       },
       "defence": {
         "name": "Armado"
+      },
+      "label_light": {
+        "name": "Luz Placa"
+      },
+      "chime_pir": {
+        "name": "Alerta Movimiento"
+      },
+      "chime_pir_monitor": {
+        "name": "Alerta Movimiento Monitor"
       }
     },
     "camera": {
@@ -166,6 +175,18 @@
       },
       "chime_volume_monitor": {
         "name": "Volumen Monitor"
+      },
+      "chime_ringtone": {
+        "name": "Tono Timbre"
+      },
+      "chime_pir_ringtone": {
+        "name": "Tono Movimiento"
+      },
+      "chime_ringtone_monitor": {
+        "name": "Tono Timbre Monitor"
+      },
+      "chime_pir_ringtone_monitor": {
+        "name": "Tono Movimiento Monitor"
       }
     }
   },

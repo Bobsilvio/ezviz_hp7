@@ -264,13 +264,13 @@ class Hp7Api:
                 return None
         return value if isinstance(value, dict) else None
 
-    def _set_chime(self, serial: str, doorbell_enable: int) -> bool:
-        """Set ChimeMusic doorbell_enable, preserving other fields."""
+    def _set_chime_fields(self, serial: str, **fields: int) -> bool:
+        """Patch one or more ChimeMusic fields, preserving the rest."""
         self.ensure_client()
         if not self._client:
             return False
         current = self._get_chime_config(serial) or {}
-        config = {**self._CHIME_DEFAULTS, **current, "doorbell_enable": doorbell_enable}
+        config = {**self._CHIME_DEFAULTS, **current, **fields}
         value = json.dumps(config, separators=(",", ":"))
         url = (
             f"https://{self._url}/v3/devconfig/v1/keyValue"
@@ -282,16 +282,57 @@ class Hp7Api:
             resp.raise_for_status()
             return True
         except (RequestException, ValueError) as exc:
-            _LOGGER.error("EZVIZ HP7: _set_chime failed: %s", exc)
+            _LOGGER.error("EZVIZ HP7: _set_chime_fields failed: %s", exc)
             return False
+
+    def _set_chime(self, serial: str, doorbell_enable: int) -> bool:
+        """Legacy wrapper kept for backwards-compatible call sites."""
+        return self._set_chime_fields(serial, doorbell_enable=doorbell_enable)
 
     def enable_chime(self, serial: str) -> bool:
         """Enable monitor chime sound (doorbell_enable=1)."""
-        return self._set_chime(serial, doorbell_enable=1)
+        return self._set_chime_fields(serial, doorbell_enable=1)
 
     def disable_chime(self, serial: str) -> bool:
         """Disable monitor chime sound (doorbell_enable=0)."""
-        return self._set_chime(serial, doorbell_enable=0)
+        return self._set_chime_fields(serial, doorbell_enable=0)
+
+    # PIR sound notification (motion alert chime).
+
+    def set_chime_pir_enable(self, serial: str, enable: bool) -> bool:
+        return self._set_chime_fields(serial, pir_enable=int(bool(enable)))
+
+    def get_chime_pir_state(self, serial: str) -> bool | None:
+        cfg = self._get_chime_config(serial)
+        if cfg is None:
+            return None
+        return cfg.get("pir_enable") in (1, "1", True)
+
+    # Ringtone selection (0-N, exact range depends on firmware).
+
+    def set_chime_ringtone(self, serial: str, ringtone: int) -> bool:
+        return self._set_chime_fields(serial, doorbell=max(0, int(ringtone)))
+
+    def get_chime_ringtone(self, serial: str) -> int | None:
+        cfg = self._get_chime_config(serial)
+        if cfg is None:
+            return None
+        try:
+            return int(cfg.get("doorbell", 0))
+        except (TypeError, ValueError):
+            return None
+
+    def set_chime_pir_ringtone(self, serial: str, ringtone: int) -> bool:
+        return self._set_chime_fields(serial, pir=max(0, int(ringtone)))
+
+    def get_chime_pir_ringtone(self, serial: str) -> int | None:
+        cfg = self._get_chime_config(serial)
+        if cfg is None:
+            return None
+        try:
+            return int(cfg.get("pir", 0))
+        except (TypeError, ValueError):
+            return None
 
     def get_chime_state(self, serial: str) -> bool | None:
         """Return doorbell_enable state (True/False), or None on error."""
@@ -338,6 +379,8 @@ class Hp7Api:
 
     # SwitchType.PRIVACY (camera blackout) = 7.
     _PRIVACY_SWITCH_TYPE = 7
+    # SwitchType.CHIME_INDICATOR_LIGHT (HP7 doorbell label/name LED) = 611.
+    _LABEL_LIGHT_SWITCH_TYPE = 611
 
     def set_dnd(self, serial: str, enable: bool) -> bool:
         """Toggle Do-Not-Disturb on the device."""
@@ -377,6 +420,26 @@ class Hp7Api:
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("EZVIZ HP7: set_camera_defence failed: %s", exc)
+            return False
+
+    def set_label_light(self, serial: str, enable: bool) -> bool:
+        """Toggle the doorbell name/label LED (CHIME_INDICATOR_LIGHT switch).
+
+        Issue #24 — controls the LED that illuminates the name tag plate on
+        the HP7 doorbell button. Switch type 611 per pylocalapi constants.
+        """
+        self.ensure_client()
+        if not self._client:
+            return False
+        try:
+            self._client.switch_status(
+                serial,
+                self._LABEL_LIGHT_SWITCH_TYPE,
+                bool(enable),
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: label light switch failed: %s", exc)
             return False
 
     @staticmethod
@@ -431,7 +494,10 @@ class Hp7Api:
                     coerced = self._coerce_bool(sw.get("enable"))
                     if coerced is not None:
                         out["privacy_on"] = coerced
-                    break
+                elif s_type == self._LABEL_LIGHT_SWITCH_TYPE:
+                    coerced = self._coerce_bool(sw.get("enable"))
+                    if coerced is not None:
+                        out["label_light_on"] = coerced
 
         status = info.get("STATUS") or {}
         if isinstance(status, dict):
@@ -494,6 +560,15 @@ class Hp7Api:
             chime_vol = self.get_chime_volume(serial)
             if chime_vol is not None:
                 status_data["chime_volume"] = chime_vol
+            pir_on = self.get_chime_pir_state(serial)
+            if pir_on is not None:
+                status_data["chime_pir_is_on"] = pir_on
+            ring = self.get_chime_ringtone(serial)
+            if ring is not None:
+                status_data["chime_ringtone"] = ring
+            pir_ring = self.get_chime_pir_ringtone(serial)
+            if pir_ring is not None:
+                status_data["chime_pir_ringtone"] = pir_ring
 
             # Multi-monitor support: accept str or list and produce per-serial
             # dicts so the entity layer can iterate.
@@ -505,6 +580,9 @@ class Hp7Api:
             if monitors:
                 monitor_chimes: dict[str, bool] = {}
                 monitor_vols: dict[str, int] = {}
+                monitor_pir: dict[str, bool] = {}
+                monitor_ring: dict[str, int] = {}
+                monitor_pir_ring: dict[str, int] = {}
                 for ms in monitors:
                     mc = self.get_chime_state(ms)
                     if mc is not None:
@@ -512,16 +590,29 @@ class Hp7Api:
                     mv = self.get_chime_volume(ms)
                     if mv is not None:
                         monitor_vols[ms] = mv
+                    mp = self.get_chime_pir_state(ms)
+                    if mp is not None:
+                        monitor_pir[ms] = mp
+                    mr = self.get_chime_ringtone(ms)
+                    if mr is not None:
+                        monitor_ring[ms] = mr
+                    mpr = self.get_chime_pir_ringtone(ms)
+                    if mpr is not None:
+                        monitor_pir_ring[ms] = mpr
                 if monitor_chimes:
                     status_data["chime_is_on_monitors"] = monitor_chimes
-                    # Back-compat: keep the legacy single-monitor key when
-                    # exactly one monitor is configured.
                     if len(monitor_chimes) == 1:
                         status_data["chime_is_on_monitor"] = next(
                             iter(monitor_chimes.values())
                         )
                 if monitor_vols:
                     status_data["chime_volume_monitors"] = monitor_vols
+                if monitor_pir:
+                    status_data["chime_pir_is_on_monitors"] = monitor_pir
+                if monitor_ring:
+                    status_data["chime_ringtone_monitors"] = monitor_ring
+                if monitor_pir_ring:
+                    status_data["chime_pir_ringtone_monitors"] = monitor_pir_ring
 
             # Extra states best-effort (DND / privacy / defence).
             extra = self._read_extra_states(serial)

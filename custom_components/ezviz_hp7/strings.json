@@ -122,6 +122,15 @@
       },
       "defence": {
         "name": "Allarme Armato"
+      },
+      "label_light": {
+        "name": "Luce Targhetta"
+      },
+      "chime_pir": {
+        "name": "Allerta Movimento"
+      },
+      "chime_pir_monitor": {
+        "name": "Allerta Movimento Monitor"
       }
     },
     "camera": {
@@ -138,6 +147,18 @@
       },
       "chime_volume_monitor": {
         "name": "Volume Monitor"
+      },
+      "chime_ringtone": {
+        "name": "Suoneria Campanello"
+      },
+      "chime_pir_ringtone": {
+        "name": "Suoneria Movimento"
+      },
+      "chime_ringtone_monitor": {
+        "name": "Suoneria Campanello Monitor"
+      },
+      "chime_pir_ringtone_monitor": {
+        "name": "Suoneria Movimento Monitor"
       }
     },
     "binary_sensor": {

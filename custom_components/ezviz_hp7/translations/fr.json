@@ -150,6 +150,15 @@
       },
       "defence": {
         "name": "Armé"
+      },
+      "label_light": {
+        "name": "Lumière Plaque"
+      },
+      "chime_pir": {
+        "name": "Alerte Mouvement"
+      },
+      "chime_pir_monitor": {
+        "name": "Alerte Mouvement Moniteur"
       }
     },
     "camera": {
@@ -166,6 +175,18 @@
       },
       "chime_volume_monitor": {
         "name": "Volume Moniteur"
+      },
+      "chime_ringtone": {
+        "name": "Sonnerie Carillon"
+      },
+      "chime_pir_ringtone": {
+        "name": "Sonnerie Mouvement"
+      },
+      "chime_ringtone_monitor": {
+        "name": "Sonnerie Carillon Moniteur"
+      },
+      "chime_pir_ringtone_monitor": {
+        "name": "Sonnerie Mouvement Moniteur"
       }
     }
   },
