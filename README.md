@@ -42,25 +42,43 @@ Remove unused devices to free at least one slot.
 
 ## ✨ Features
 
+> ⚠️ **0.9.0 is a beta release.** Live video and core controls are tested and working on a real HP7. Several newer entities (label-light switch, motion-sound alert, ringtone selectors, unlock-event binary sensors / event, 2FA SMS login) are wired against the EZVIZ APIs but **need feedback from real hardware** — if you spot something wrong, please open an issue with the log lines you see.
+
 - Auto-discovery and registration of paired EZVIZ HP7 / CP7 devices.
 - **Buttons**
   - 🔑 Unlock **door** (lock #2 by default)
   - 🚪 Unlock **gate** (lock #1 by default)
-- **Switch**
-  - 🔔 Monitor chime sound (enable/disable doorbell on the indoor monitor)
-- **Camera**
-  - 📷 Last-alarm snapshot (fetched from EZVIZ cloud)
+- **Cameras**
+  - 📷 **Last-alarm snapshot** (fetched from EZVIZ cloud)
+  - 🎥 **Live video** (`camera.<...>_live`) — H.264 720p video + AAC 16 kHz mono audio via the EZVIZ VTM cloud relay, served to HA's Stream component as MPEG-TS. Works over WAN, no port forwarding, no go2rtc required.
+- **Switches**
+  - 🔔 `chime_sound` — doorbell button chime on the camera unit
+  - 🔔 `chime_sound_monitor` — chime on each configured indoor monitor (multi-monitor friendly — HP7 bifamigliare)
+  - 🛎️ `chime_pir` / `chime_pir_monitor` — motion sound notification on / off
+  - 💡 `label_light` — *(beta)* the LED that illuminates the name-tag plate on the doorbell
+  - 🌙 `dnd` — *(beta)* Do-Not-Disturb mode
+  - 🕶️ `privacy` — *(beta)* privacy / camera blackout
+  - 🛡️ `defence` — *(beta)* armed / disarmed motion detection
+- **Number sliders**
+  - 🔊 `chime_volume` / `chime_volume_monitor` — chime volume 0–7
+  - 🎵 `chime_ringtone` / `chime_ringtone_monitor` — *(beta)* ringtone selector 0–15 for the doorbell press
+  - 🎵 `chime_pir_ringtone` / `chime_pir_ringtone_monitor` — *(beta)* ringtone selector 0–15 for motion events
 - **Sensors**
   - Device name, firmware version, online/offline status
   - Wi-Fi signal (%), SSID, local IP, WAN IP
   - Motion state, last alarm timestamp, alarm name, seconds since last trigger
-- **Binary sensors**
+- **Binary sensors** (each pulses for 3 s on a fresh event)
   - Motion (`device_class: motion`)
   - Smart Detection Alarm, Intelligent Detection Alarm
-  - Doorbell ringing, Gate open, Lock unlocked (pulse 3s)
+  - Doorbell ringing, Gate open, Lock unlocked
+  - 🆔 *(beta — HP7 Pro)* `unlock_rfid`, `unlock_face`, `unlock_palm`, `unlock_code`, `unlock_app`
+- **HA event**: `ezviz_hp7_unlock` — *(beta)* fired on every recognised unlock with `{category, alarm_name, alarm_time, serial}` so automations can react to RFID / face / palm / code / app unlocks without polling state.
 - **Services**
   - `ezviz_hp7.unlock_door`
   - `ezviz_hp7.unlock_gate`
+- **Login**
+  - Account / password / region
+  - 🔐 *(beta)* 2FA SMS step — the config flow now prompts for the verification code EZVIZ pushes when MFA is enabled, no need to disable 2-step login
 - **Regions:** `eu`, `us`, `cn`, `as`, `sa`, `ru`
 
 ---
