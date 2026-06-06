@@ -23,10 +23,18 @@
         "data": {
           "serial": "Serial Number"
         }
+      },
+      "sms": {
+        "title": "SMS Verification",
+        "description": "Enter the SMS code EZVIZ sent you to complete two-factor authentication.",
+        "data": {
+          "sms_code": "SMS code"
+        }
       }
     },
     "error": {
-      "auth": "Login failed. Check credentials/region."
+      "auth": "Login failed. Check credentials/region.",
+      "invalid_sms": "Invalid SMS code, please retry."
     },
     "abort": {
       "no_devices": "No devices found in account.",
@@ -102,6 +110,21 @@
       },
       "unlock_lock": {
         "name": "Lock Unlocked"
+      },
+      "unlock_rfid": {
+        "name": "RFID Unlock"
+      },
+      "unlock_face": {
+        "name": "Face Unlock"
+      },
+      "unlock_palm": {
+        "name": "Palm Unlock"
+      },
+      "unlock_code": {
+        "name": "Code Unlock"
+      },
+      "unlock_app": {
+        "name": "App Unlock"
       }
     },
     "button": {

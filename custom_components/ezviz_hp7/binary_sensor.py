@@ -63,7 +63,56 @@ ALARM_MAP: list[tuple[list[str], str, str, BinarySensorDeviceClass | None, str]]
         None,
         "mdi:lock-open-variant",
     ),
+    # HP7 Pro: tap-to-unlock variants. Strings observed in app event log;
+    # different firmwares may localise them — _matches_any() compares case-
+    # insensitively below.
+    (
+        ["RFID card unlock", "Unlock with RFID", "Card unlock"],
+        "unlock_rfid",
+        None,
+        "mdi:card-account-details",
+    ),
+    (
+        ["Face recognition unlock", "Face unlock", "Unlock with face"],
+        "unlock_face",
+        None,
+        "mdi:face-recognition",
+    ),
+    (
+        ["Palm vein unlock", "Palm unlock", "Unlock with palm"],
+        "unlock_palm",
+        None,
+        "mdi:hand-front-right",
+    ),
+    (
+        ["Passcode unlock", "Code unlock", "Password unlock"],
+        "unlock_code",
+        None,
+        "mdi:dialpad",
+    ),
+    (
+        ["EZVIZ app unlock", "App unlock"],
+        "unlock_app",
+        None,
+        "mdi:cellphone",
+    ),
 ]
+
+
+# HA event fired on every recognised unlock. Drives automations that want
+# the unlock category and the underlying alarm name.
+HP7_UNLOCK_EVENT = "ezviz_hp7_unlock"
+
+# Translation keys recognised as unlock categories.
+_UNLOCK_KEYS = {
+    "unlock_lock",
+    "unlock_rfid",
+    "unlock_face",
+    "unlock_palm",
+    "unlock_code",
+    "unlock_app",
+    "gate_open",
+}
 
 
 def _to_bool(value: Any) -> bool:
@@ -229,19 +278,37 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
 
         self._off_unsub = async_call_later(self.hass, PULSE_SECONDS, _cb)
 
+    def _alarm_matches(self, current_alarm: Any) -> bool:
+        """Case-insensitive substring match against the configured names.
+
+        EZVIZ alarm strings vary between firmwares and translations; an exact
+        match misses too many real events. Treat the configured names as
+        substrings, lowercase on both sides.
+        """
+        if not isinstance(current_alarm, str):
+            return False
+        cur = current_alarm.lower()
+        for name in self._match_values:
+            if not isinstance(name, str):
+                continue
+            if name.lower() in cur:
+                return True
+        return False
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle coordinator data update event.
-        
-        Detects new alarms and triggers pulse on matching sensor.
+
+        Detects new alarms, pulses the sensor, and fires the
+        ``ezviz_hp7_unlock`` HA event for unlock-category alarms so users
+        can react to RFID / face / palm / code / app unlocks in automations.
         """
         data = self.coordinator.data or {}
         current_alarm = data.get(ALARM_FIELD)
         current_alarm_time = data.get(ALARM_TIME_FIELD)
 
-        # Check if new alarm matches this sensor and is different from last
         if (
-            current_alarm in self._match_values
+            self._alarm_matches(current_alarm)
             and current_alarm_time is not None
             and current_alarm_time != self._prev_alarm_time
         ):
@@ -249,11 +316,23 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
             self._last_trigger = dt_util.utcnow()
             self._schedule_state_update()
             _LOGGER.debug(
-                "Alarm triggered for %s: %s (%s)", 
-                self._attr_translation_key, 
+                "Alarm triggered for %s: %s (%s)",
+                self._attr_translation_key,
                 current_alarm,
                 self._serial,
             )
+            # Fire HA event for unlock categories so automations can branch
+            # on the kind of unlock without polling state.
+            if self._attr_translation_key in _UNLOCK_KEYS and self.hass is not None:
+                self.hass.bus.async_fire(
+                    HP7_UNLOCK_EVENT,
+                    {
+                        "category": self._attr_translation_key,
+                        "alarm_name": current_alarm,
+                        "alarm_time": current_alarm_time,
+                        "serial": self._serial,
+                    },
+                )
 
         self.async_write_ha_state()
 

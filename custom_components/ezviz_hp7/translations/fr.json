@@ -23,10 +23,18 @@
         "data": {
           "serial": "Numéro de série"
         }
+      },
+      "sms": {
+        "title": "Vérification SMS",
+        "description": "Saisissez le code SMS qu'EZVIZ vous a envoyé pour compléter la double authentification.",
+        "data": {
+          "sms_code": "Code SMS"
+        }
       }
     },
     "error": {
-      "auth": "Échec d'authentification. Vérifiez identifiants/région."
+      "auth": "Échec d'authentification. Vérifiez identifiants/région.",
+      "invalid_sms": "Code SMS invalide, réessayez."
     },
     "abort": {
       "no_devices": "Pas d'équiquement trouvé sur ce compte.",
@@ -102,6 +110,21 @@
       },
       "unlock_lock": {
         "name": "Serrure Déverrouillée"
+      },
+      "unlock_rfid": {
+        "name": "Déverrouillage RFID"
+      },
+      "unlock_face": {
+        "name": "Déverrouillage Visage"
+      },
+      "unlock_palm": {
+        "name": "Déverrouillage Paume"
+      },
+      "unlock_code": {
+        "name": "Déverrouillage Code"
+      },
+      "unlock_app": {
+        "name": "Déverrouillage App"
       }
     },
     "button": {

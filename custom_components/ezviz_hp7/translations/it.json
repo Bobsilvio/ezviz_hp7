@@ -23,10 +23,18 @@
         "data": {
           "serial": "Numero di serie"
         }
+      },
+      "sms": {
+        "title": "Verifica SMS",
+        "description": "Inserisci il codice SMS che ti è stato inviato da EZVIZ per completare il login a due fattori.",
+        "data": {
+          "sms_code": "Codice SMS"
+        }
       }
     },
     "error": {
-      "auth": "Login fallito. Controlla credenziali/region."
+      "auth": "Login fallito. Controlla credenziali/region.",
+      "invalid_sms": "Codice SMS non valido. Riprova."
     },
     "abort": {
       "no_devices": "Nessun dispositivo trovato nell'account.",
@@ -102,6 +110,21 @@
       },
       "unlock_lock": {
         "name": "Serratura Aperta"
+      },
+      "unlock_rfid": {
+        "name": "Sblocco RFID"
+      },
+      "unlock_face": {
+        "name": "Sblocco Volto"
+      },
+      "unlock_palm": {
+        "name": "Sblocco Palmo"
+      },
+      "unlock_code": {
+        "name": "Sblocco Codice"
+      },
+      "unlock_app": {
+        "name": "Sblocco App"
       }
     },
     "button": {

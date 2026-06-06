@@ -23,10 +23,18 @@
         "data": {
           "serial": "Número de Serie"
         }
+      },
+      "sms": {
+        "title": "Verificación SMS",
+        "description": "Introduce el código SMS que EZVIZ te envió para completar el doble factor.",
+        "data": {
+          "sms_code": "Código SMS"
+        }
       }
     },
     "error": {
-      "auth": "Error de inicio de sesión. Verifique credenciales/región."
+      "auth": "Error de inicio de sesión. Verifique credenciales/región.",
+      "invalid_sms": "Código SMS inválido, inténtalo de nuevo."
     },
     "abort": {
       "no_devices": "No se encontraron dispositivos en la cuenta.",
@@ -102,6 +110,21 @@
       },
       "unlock_lock": {
         "name": "Cerradura Desbloqueada"
+      },
+      "unlock_rfid": {
+        "name": "Desbloqueo RFID"
+      },
+      "unlock_face": {
+        "name": "Desbloqueo Facial"
+      },
+      "unlock_palm": {
+        "name": "Desbloqueo Palma"
+      },
+      "unlock_code": {
+        "name": "Desbloqueo Código"
+      },
+      "unlock_app": {
+        "name": "Desbloqueo App"
       }
     },
     "button": {

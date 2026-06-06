@@ -11,6 +11,10 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .api import Hp7Api
 from .const import DOMAIN, CONF_REGION, CONF_SERIAL, CONF_MONITOR_SERIAL
+from .pylocalapi.exceptions import EzvizAuthVerificationCode
+
+CONF_SMS_CODE = "sms_code"
+SMS_SCHEMA = vol.Schema({vol.Required(CONF_SMS_CODE): str})
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +72,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._cached_creds: dict[str, Any] | None = None
         self._device_options: dict[str, str] | None = None
         self._serial_to_unique: dict[str, str] | None = None
+        self._pending_api: Hp7Api | None = None  # set during 2FA flow
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -93,15 +98,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ok = await self.hass.async_add_executor_job(api.login)
             if not ok:
                 raise ValueError("Login returned False")
-
-            # Store token for later use
-            if api.token:
-                user_input["token"] = api.token
-
-            # List available devices
-            devices: dict[str, dict[str, Any]] = {}
-            if hasattr(api, "list_devices"):
-                devices = await self.hass.async_add_executor_job(api.list_devices)
+        except EzvizAuthVerificationCode:
+            # Cloud already pushed the SMS code; hand off to async_step_sms.
+            self._cached_creds = user_input
+            self._pending_api = api
+            return await self.async_step_sms()
         except ValueError as exc:
             _LOGGER.error("EZVIZ authentication failed: %s", exc)
             return self.async_show_form(
@@ -117,15 +118,32 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors={"base": "cannot_connect"},
             )
 
-        # Build device selection options, filtering short/duplicate serials
+        return await self._post_login(api, user_input)
+
+    async def _post_login(
+        self, api: Hp7Api, user_input: dict[str, Any]
+    ) -> FlowResult:
+        """Branch to pick-serial or enter-serial after a successful login."""
+        if api.token:
+            user_input["token"] = api.token
+
+        devices: dict[str, dict[str, Any]] = {}
+        try:
+            if hasattr(api, "list_devices"):
+                devices = await self.hass.async_add_executor_job(api.list_devices)
+        except Exception as exc:
+            _LOGGER.error("EZVIZ device list error: %s", exc)
+            return self.async_show_form(
+                step_id="user",
+                data_schema=DATA_SCHEMA,
+                errors={"base": "cannot_connect"},
+            )
+
         options: dict[str, str] = {}
         serial_to_unique: dict[str, str] = {}
 
         for serial_key, info in (devices or {}).items():
-            # Get device name
             name = (info.get("name") or info.get("device_name") or "Device").strip()
-
-            # Try to get a stable unique ID from API
             api_unique = (
                 info.get("device_id")
                 or info.get("uuid")
@@ -133,28 +151,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 or info.get("full_serial")
                 or None
             )
-
-            # Choose which serial to show user (prefer long serials)
             if _looks_like_long_serial(serial_key):
                 shown_serial = serial_key
             else:
                 shown_serial = (
-                    info.get("serial_long")
-                    or info.get("full_serial")
-                    or None
+                    info.get("serial_long") or info.get("full_serial") or None
                 )
-
-            # Skip empty serials to avoid duplicates
             if not shown_serial:
                 continue
-
-            # Unique ID: prefer API unique ID, otherwise use shown serial
             unique_id = api_unique or shown_serial
-
-            # Avoid duplicates if multiple records point to same device
             if shown_serial in options or unique_id in serial_to_unique.values():
                 continue
-
             options[shown_serial] = f"{name} ({shown_serial})"
             serial_to_unique[shown_serial] = unique_id
 
@@ -164,9 +171,54 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._device_options = options
             self._serial_to_unique = serial_to_unique
             return await self.async_step_pick_serial()
-
-        # No devices found, ask user to enter manually
         return await self.async_step_enter_serial()
+
+    async def async_step_sms(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Ask for the 2FA SMS code and re-attempt login with it.
+
+        Reached from async_step_user when the EZVIZ cloud answers with code
+        6002 (MFA enabled). pylocalapi has already triggered the SMS push, so
+        we just need to collect the code from the user.
+        """
+        if self._pending_api is None or self._cached_creds is None:
+            # State lost (e.g. flow resumed in a weird way): bounce back to the
+            # credentials step rather than crash.
+            return await self.async_step_user()
+
+        if user_input is None:
+            return self.async_show_form(step_id="sms", data_schema=SMS_SCHEMA)
+
+        raw = str(user_input.get(CONF_SMS_CODE, "")).strip()
+        try:
+            code_int = int(raw)
+        except ValueError:
+            return self.async_show_form(
+                step_id="sms",
+                data_schema=SMS_SCHEMA,
+                errors={"base": "invalid_sms"},
+            )
+
+        api = self._pending_api
+        try:
+            await self.hass.async_add_executor_job(api.login, code_int)
+        except EzvizAuthVerificationCode:
+            return self.async_show_form(
+                step_id="sms",
+                data_schema=SMS_SCHEMA,
+                errors={"base": "invalid_sms"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("EZVIZ SMS auth failed: %s", exc)
+            return self.async_show_form(
+                step_id="sms",
+                data_schema=SMS_SCHEMA,
+                errors={"base": "cannot_connect"},
+            )
+
+        self._pending_api = None
+        return await self._post_login(api, self._cached_creds)
 
     async def async_step_pick_serial(
         self, user_input: dict[str, Any] | None = None

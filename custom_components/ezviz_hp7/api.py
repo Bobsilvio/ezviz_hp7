@@ -87,31 +87,51 @@ class Hp7Api:
             _LOGGER.error("Failed to initialize EzvizClient: %s", exc)
             raise RuntimeError(f"Failed to initialize EZVIZ client: {exc}") from exc
 
-    def _login_and_store_token(self) -> None:
+    def _login_and_store_token(self, sms_code: int | None = None) -> None:
         """Authenticate with EZVIZ server and store token.
 
         Raises:
             ValueError: If login fails.
+            EzvizAuthVerificationCode: If the account requires SMS-based 2FA
+                (the cloud has already pushed the code).
         """
         if not self._client:
             raise RuntimeError("Client not initialized")
 
         try:
-            self._token = self._client.login()
+            self._token = self._client.login(sms_code=sms_code)
             _LOGGER.debug("EZVIZ HP7 authentication successful")
         except (ValueError, KeyError) as exc:
             _LOGGER.error("EZVIZ HP7 authentication failed: %s", exc)
             raise ValueError(f"Authentication failed: {exc}") from exc
 
-    def login(self) -> bool:
+    def login(self, sms_code: int | None = None) -> bool:
         """Authenticate with EZVIZ server.
+
+        Args:
+            sms_code: Optional 2FA code (requested via config_flow after the
+                cloud answers with code 6002).
 
         Returns:
             True if authentication was successful.
 
         Raises:
             RuntimeError: If authentication fails.
+            EzvizAuthVerificationCode: If MFA is required.
         """
+        if sms_code is not None:
+            # Re-entering with the SMS code: build a fresh client and force
+            # login through the code-aware path.
+            from .pylocalapi.client import EzvizClient
+
+            self._client = EzvizClient(
+                account=self._username,
+                password=self._password,
+                url=self._url,
+                token=self._token,
+            )
+            self._login_and_store_token(sms_code=sms_code)
+            return True
         self.ensure_client()
         return True
 
