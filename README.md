@@ -22,7 +22,7 @@ Don't forget to follow me on social media:
 Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** (and their close siblings). HP7 is the original target; CP7 shares the same cloud APIs and live-stream protocol, so it works through the same code path. The device model is auto-detected from the cloud (`deviceSubCategory` / `deviceType`) and displayed in the Home Assistant device card.
 Unlock door/gate remotely, enable/disable the monitor chime, view the last-alarm snapshot, and expose device sensors for automations and dashboards.
 
-- **Version:** 0.5.0
+- **Version:** 0.6.0
 - **Minimum Home Assistant:** 2025.9.0
 - **Languages:** Italian, English, Spanish, French (fallback English)
 
