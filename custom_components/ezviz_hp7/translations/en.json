@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect EZVIZ HP7",
+        "title": "Connect EZVIZ HP7 / CP7",
         "description": "Enter your EZVIZ credentials and region.",
         "data": {
           "username": "Username",
@@ -12,14 +12,14 @@
       },
       "pick_serial": {
         "title": "Select Device",
-        "description": "Choose the serial number of your HP7.",
+        "description": "Choose the serial number of your HP7 / CP7.",
         "data": {
           "serial": "Serial Number"
         }
       },
       "enter_serial": {
         "title": "Enter Serial Number",
-        "description": "Manually enter the serial number of your HP7.",
+        "description": "Manually enter the serial number of your HP7 / CP7.",
         "data": {
           "serial": "Serial Number"
         }
@@ -146,7 +146,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "EZVIZ HP7 options",
+        "title": "EZVIZ HP7 / CP7 options",
         "description": "Enter the serial of the indoor monitor to expose a separate switch for its chime. Leave empty if you don't have an indoor monitor or don't want to manage it.",
         "data": {
           "monitor_serial": "Indoor monitor serial"

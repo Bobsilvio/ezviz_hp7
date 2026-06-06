@@ -12,14 +12,15 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up EZVIZ HP7 switches."""
+    """Set up EZVIZ HP7/CP7 switches."""
     data = hass.data[DOMAIN][entry.entry_id]
     api = data["api"]
     serial = data["serial"]
     monitor_serial = data.get("monitor_serial")
+    model = data.get("model") or "HP7"
     coordinator = data["coordinator"]
 
-    entities = [EzvizHp7ChimeSwitch(coordinator, api, serial)]
+    entities = [EzvizHp7ChimeSwitch(coordinator, api, serial, model=model)]
     if monitor_serial:
         entities.append(
             EzvizHp7ChimeSwitch(
@@ -28,7 +29,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 monitor_serial,
                 state_key="chime_is_on_monitor",
                 translation_key="chime_sound_monitor",
-                model="HP7 Monitor",
+                model=f"{model} Monitor",
             )
         )
     async_add_entities(entities)
@@ -58,12 +59,8 @@ class EzvizHp7ChimeSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._serial)},
-            name=f"EZVIZ {self._model} ({self._serial})",
-            manufacturer="EZVIZ",
-            model=self._model,
-        )
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
 
     @property
     def is_on(self) -> bool | None:

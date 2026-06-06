@@ -1,6 +1,6 @@
 {
   "domain": "ezviz_hp7",
-  "name": "EZVIZ HP7",
+  "name": "EZVIZ HP7 / CP7",
   "codeowners": ["@Bobsilvio"],
   "config_flow": true,
   "dependencies": [],

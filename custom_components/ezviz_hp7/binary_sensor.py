@@ -97,12 +97,13 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
     coordinator: Hp7Coordinator = data["coordinator"]
     serial: str = data["serial"]
+    model: str = data.get("model") or "HP7"
 
     entities: list[BinarySensorEntity] = []
 
     for key, translation_key, device_class in SIMPLE_MAP:
         entities.append(
-            Hp7BinarySimple(coordinator, serial, key, translation_key, device_class)
+            Hp7BinarySimple(coordinator, serial, model, key, translation_key, device_class)
         )
 
     for match_values, translation_key, device_class, icon in ALARM_MAP:
@@ -110,6 +111,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
             Hp7BinaryAlarm(
                 coordinator,
                 serial,
+                model,
                 match_values,
                 translation_key,
                 device_class,
@@ -129,21 +131,24 @@ class Hp7BinarySimple(CoordinatorEntity, BinarySensorEntity):
         self,
         coordinator: Hp7Coordinator,
         serial: str,
+        model: str,
         key: str,
         translation_key: str,
         device_class: BinarySensorDeviceClass,
     ) -> None:
         """Initialize binary sensor entity.
-        
+
         Args:
             coordinator: Data coordinator.
             serial: Device serial number.
+            model: Device model label (HP7 / CP7 / ...).
             key: Key in coordinator data.
             translation_key: i18n translation key.
             device_class: Device class for sensor.
         """
         super().__init__(coordinator)
         self._serial = serial
+        self._model = model
         self._key = key
         self._attr_translation_key = translation_key
         self._attr_unique_id = f"{DOMAIN}_{serial}_binary_{key}"
@@ -159,12 +164,8 @@ class Hp7BinarySimple(CoordinatorEntity, BinarySensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._serial)},
-            name=f"EZVIZ HP7 ({self._serial})",
-            manufacturer="EZVIZ",
-            model="HP7",
-        )
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
 
 
 class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
@@ -180,16 +181,18 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
         self,
         coordinator: Hp7Coordinator,
         serial: str,
+        model: str,
         match_values: list[str],
         translation_key: str,
         device_class: BinarySensorDeviceClass | None,
         icon: str,
     ) -> None:
         """Initialize alarm binary sensor entity.
-        
+
         Args:
             coordinator: Data coordinator.
             serial: Device serial number.
+            model: Device model label (HP7 / CP7 / ...).
             match_values: List of alarm names to trigger on.
             translation_key: i18n translation key.
             device_class: Device class for sensor.
@@ -197,6 +200,7 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
         """
         super().__init__(coordinator)
         self._serial = serial
+        self._model = model
         self._match_values = match_values
         self._attr_translation_key = translation_key
         self._attr_unique_id = f"{DOMAIN}_{serial}_alarm_{translation_key}"
@@ -256,9 +260,5 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._serial)},
-            name=f"EZVIZ HP7 ({self._serial})",
-            manufacturer="EZVIZ",
-            model="HP7",
-        )
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)

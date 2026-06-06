@@ -33,12 +33,13 @@ async def async_setup_entry(
     data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
     api: Hp7Api = data["api"]
     serial: str = data["serial"]
+    model: str = data.get("model") or "HP7"
 
     entities: list[EzvizHp7Button] = []
     if getattr(api, "supports_gate", False):
-        entities.append(EzvizHp7Button(hass, api, serial, "unlock_gate"))
+        entities.append(EzvizHp7Button(hass, api, serial, model, "unlock_gate"))
     if getattr(api, "supports_door", False):
-        entities.append(EzvizHp7Button(hass, api, serial, "unlock_door"))
+        entities.append(EzvizHp7Button(hass, api, serial, model, "unlock_door"))
 
     async_add_entities(entities)
 
@@ -53,19 +54,22 @@ class EzvizHp7Button(ButtonEntity):
         hass: HomeAssistant,
         api: Hp7Api,
         serial: str,
+        model: str,
         action: str,
     ) -> None:
         """Initialize button entity.
-        
+
         Args:
             hass: Home Assistant instance.
             api: EZVIZ HP7 API instance.
             serial: Device serial number.
+            model: Device model label (HP7 / CP7 / ...).
             action: Button action ("unlock_door" or "unlock_gate").
         """
         self.hass = hass
         self._api = api
         self._serial = serial
+        self._model = model
         self._action = action
         self._attr_translation_key = action
         self._attr_unique_id = f"{DOMAIN}_{serial}_{action}"
@@ -73,12 +77,8 @@ class EzvizHp7Button(ButtonEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._serial)},
-            name=f"EZVIZ HP7 ({self._serial})",
-            manufacturer="EZVIZ",
-            model="HP7",
-        )
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
 
     async def async_press(self) -> None:
         """Handle button press.

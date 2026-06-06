@@ -17,9 +17,9 @@ Don't forget to follow me on social media:
 
 [![YouTube](https://img.shields.io/badge/Subscribe_YouTube-%23FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/@silviosmartalexa)
 
-# Home Assistant Integration for EZVIZ HP7 Intercom
+# Home Assistant Integration for EZVIZ HP7 / CP7 Intercom
 
-Custom Home Assistant integration for the **EZVIZ HP7 video intercom**.
+Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** (and their close siblings). HP7 is the original target; CP7 shares the same cloud APIs and live-stream protocol, so it works through the same code path. The device model is auto-detected from the cloud (`deviceSubCategory` / `deviceType`) and displayed in the Home Assistant device card.
 Unlock door/gate remotely, enable/disable the monitor chime, view the last-alarm snapshot, and expose device sensors for automations and dashboards.
 
 - **Version:** 0.4.0
@@ -42,7 +42,7 @@ Remove unused devices to free at least one slot.
 
 ## ✨ Features
 
-- Auto-discovery and registration of paired EZVIZ HP7 devices.
+- Auto-discovery and registration of paired EZVIZ HP7 / CP7 devices.
 - **Buttons**
   - 🔑 Unlock **door** (lock #2 by default)
   - 🚪 Unlock **gate** (lock #1 by default)
@@ -83,19 +83,19 @@ Remove unused devices to free at least one slot.
 ## ⚙️ Configuration
 
 1. Go to **Settings → Devices & Services → Add Integration**.
-2. Search for **EZVIZ HP7**.
+2. Search for **EZVIZ HP7 / CP7**.
 3. Enter your **EZVIZ account credentials**:
    - **Username** (email used for the EZVIZ app)
    - **Password**
    - **Region** (one of `eu`, `us`, `cn`, `as`, `sa`, `ru`)
 
-The integration logs in through the EZVIZ API and automatically detects the HP7 device.
+The integration logs in through the EZVIZ API, lists every paired device on the account and lets you pick the HP7 / CP7 serial.
 
 ---
 
 ## 🛠 Usage
 
-After setup, a device card for the **EZVIZ HP7 intercom** appears with the entities listed above.
+After setup, a device card for the **EZVIZ HP7 / CP7 intercom** appears with the entities listed above (the displayed model label tracks whatever the cloud reports for that serial).
 
 Two services are exposed for automations:
 
@@ -120,8 +120,7 @@ action:
 
 ## 🚧 Limitations
 
-- **Live video streaming** is not supported. The HP7 uses temporary tickets and relay servers; only still snapshots from the last alarm are exposed via the camera entity.
-- Currently supports **one HP7 device per account** (multi-device support planned).
+- Currently supports **one HP7 / CP7 device per account entry** (multi-device support planned — multiple devices can be added today by repeating the config-entry setup).
 - The chime switch reads back state via cloud polling — changes made from the EZVIZ app appear after the next poll cycle.
 
 ---

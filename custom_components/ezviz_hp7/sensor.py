@@ -114,10 +114,11 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
     coordinator: Hp7Coordinator = data["coordinator"]
     serial: str = data["serial"]
+    model: str = data.get("model") or "HP7"
 
     entities: list[Hp7Sensor] = []
     for cfg in SENSORS:
-        entity = Hp7Sensor(coordinator, serial, *cfg)
+        entity = Hp7Sensor(coordinator, serial, model, *cfg)
         if cfg[0] in DIAGNOSTIC_KEYS:
             entity._attr_entity_category = EntityCategory.DIAGNOSTIC
             entity._attr_entity_registry_enabled_default = False
@@ -135,6 +136,7 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
         self,
         coordinator: Hp7Coordinator,
         serial: str,
+        model: str,
         path: str,
         translation_key: str,
         device_class: SensorDeviceClass | None,
@@ -143,10 +145,11 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
         transform: Any = None,
     ) -> None:
         """Initialize sensor entity.
-        
+
         Args:
             coordinator: Data coordinator.
             serial: Device serial number.
+            model: Device model label (HP7 / CP7 / ...).
             path: Dot-separated path to value in coordinator data.
             translation_key: i18n translation key.
             device_class: Device class for sensor.
@@ -156,6 +159,7 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
         """
         super().__init__(coordinator)
         self._serial = serial
+        self._model = model
         self._path = path
         self._attr_translation_key = translation_key
         self._attr_unique_id = f"{DOMAIN}_{serial}_sensor_{path.replace('.', '_')}"
@@ -177,12 +181,8 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._serial)},
-            name=f"EZVIZ HP7 ({self._serial})",
-            manufacturer="EZVIZ",
-            model="HP7",
-        )
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
 
     @property
     def native_value(self) -> Any:

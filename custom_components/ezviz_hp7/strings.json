@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Collega EZVIZ HP7",
+        "title": "Collega EZVIZ HP7 / CP7",
         "description": "Inserisci le credenziali EZVIZ e la regione.",
         "data": {
           "username": "Nome utente",
@@ -12,14 +12,14 @@
       },
       "pick_serial": {
         "title": "Seleziona dispositivo",
-        "description": "Scegli il serial del tuo HP7.",
+        "description": "Scegli il serial del tuo HP7 / CP7.",
         "data": {
           "serial": "Numero di serie"
         }
       },
       "enter_serial": {
         "title": "Inserisci numero di serie",
-        "description": "Inserisci manualmente il numero di serie del tuo HP7.",
+        "description": "Inserisci manualmente il numero di serie del tuo HP7 / CP7.",
         "data": {
           "serial": "Numero di serie"
         }
@@ -133,7 +133,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Opzioni EZVIZ HP7",
+        "title": "Opzioni EZVIZ HP7 / CP7",
         "description": "Inserisci il serial del monitor interno per esporre uno switch separato per il suo cicalino. Lascia vuoto se non hai un monitor interno o non vuoi gestirlo.",
         "data": {
           "monitor_serial": "Serial monitor interno"

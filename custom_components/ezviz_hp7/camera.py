@@ -37,9 +37,11 @@ async def async_setup_entry(
     data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
     coordinator: Hp7Coordinator = data["coordinator"]
     serial: str = data["serial"]
-    
+    model: str = data.get("model") or "HP7"
+
+
     async_add_entities(
-        [Hp7LastSnapshotCamera(hass, coordinator, serial)]
+        [Hp7LastSnapshotCamera(hass, coordinator, serial, model)]
     )
 
 
@@ -59,29 +61,28 @@ class Hp7LastSnapshotCamera(Camera, CoordinatorEntity):
         hass: HomeAssistant,
         coordinator: Hp7Coordinator,
         serial: str,
+        model: str,
     ) -> None:
         """Initialize camera entity.
-        
+
         Args:
             hass: Home Assistant instance.
             coordinator: Data coordinator.
             serial: Device serial number.
+            model: Device model label (HP7 / CP7 / ...).
         """
         Camera.__init__(self)
         CoordinatorEntity.__init__(self, coordinator)
         self.hass = hass
         self._serial = serial
+        self._model = model
         self._attr_unique_id = f"{DOMAIN}_{serial}_last_snapshot"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._serial)},
-            name=f"EZVIZ HP7 ({self._serial})",
-            manufacturer="EZVIZ",
-            model="HP7",
-        )
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
 
     @property
     def supported_features(self) -> int:

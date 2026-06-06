@@ -11,6 +11,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .const import DOMAIN, PLATFORMS, CONF_MONITOR_SERIAL
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
+from .device_info import DEFAULT_MODEL, detect_model
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +51,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Failed to connect to EZVIZ HP7 API: %s", exc)
         raise ConfigEntryNotReady(f"Cannot connect to EZVIZ HP7: {exc}") from exc
 
+    # Detect device model (HP7 / CP7 / ...) from the cloud so DeviceInfo
+    # shows the right label. Falls back to DEFAULT_MODEL on any error.
+    try:
+        model = await hass.async_add_executor_job(detect_model, api, serial)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Model detection failed (%s): %s", serial, exc)
+        model = DEFAULT_MODEL
+
     coordinator = Hp7Coordinator(hass, api, serial, monitor_serial)
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -61,6 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "api": api,
         "serial": serial,
         "monitor_serial": monitor_serial,
+        "model": model,
         "coordinator": coordinator,
     }
 

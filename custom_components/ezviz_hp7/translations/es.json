@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Conectar EZVIZ HP7",
+        "title": "Conectar EZVIZ HP7 / CP7",
         "description": "Ingrese sus credenciales de EZVIZ y región.",
         "data": {
           "username": "Usuario",
@@ -12,14 +12,14 @@
       },
       "pick_serial": {
         "title": "Seleccionar Dispositivo",
-        "description": "Elija el número de serie de su HP7.",
+        "description": "Elija el número de serie de su HP7 / CP7.",
         "data": {
           "serial": "Número de Serie"
         }
       },
       "enter_serial": {
         "title": "Ingresar Número de Serie",
-        "description": "Ingrese manualmente el número de serie de su HP7.",
+        "description": "Ingrese manualmente el número de serie de su HP7 / CP7.",
         "data": {
           "serial": "Número de Serie"
         }
@@ -146,7 +146,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Opciones EZVIZ HP7",
+        "title": "Opciones EZVIZ HP7 / CP7",
         "description": "Introduce el serial del monitor interior para exponer un interruptor independiente para su timbre. Déjalo en blanco si no tienes monitor interior o no quieres gestionarlo.",
         "data": {
           "monitor_serial": "Serial del monitor interior"
