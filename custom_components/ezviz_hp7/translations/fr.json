@@ -118,6 +118,15 @@
       },
       "chime_sound_monitor": {
         "name": "Son du Moniteur Intérieur"
+      },
+      "dnd": {
+        "name": "Ne Pas Déranger"
+      },
+      "privacy": {
+        "name": "Confidentialité"
+      },
+      "defence": {
+        "name": "Armé"
       }
     },
     "camera": {
@@ -126,6 +135,14 @@
       },
       "live": {
         "name": "Direct"
+      }
+    },
+    "number": {
+      "chime_volume": {
+        "name": "Volume Carillon"
+      },
+      "chime_volume_monitor": {
+        "name": "Volume Moniteur"
       }
     }
   },
@@ -155,7 +172,7 @@
     "step": {
       "init": {
         "title": "Options EZVIZ HP7 / CP7",
-        "description": "Saisissez le numéro de série du moniteur intérieur pour exposer un interrupteur séparé pour son carillon. Laissez vide si vous n'avez pas de moniteur intérieur ou ne souhaitez pas le gérer.",
+        "description": "Saisissez le numéro de série du moniteur intérieur (ou plusieurs séparés par virgules pour HP7 bi-famille) pour exposer un interrupteur par moniteur. Vide = aucun moniteur.",
         "data": {
           "monitor_serial": "Numéro de série du moniteur intérieur"
         }

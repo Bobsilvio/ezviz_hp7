@@ -37,11 +37,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     monitor_serial_raw = entry.options.get(
         CONF_MONITOR_SERIAL, entry.data.get(CONF_MONITOR_SERIAL)
     )
-    monitor_serial = (
-        monitor_serial_raw.strip()
-        if isinstance(monitor_serial_raw, str) and monitor_serial_raw.strip()
-        else None
-    )
+    # Accept legacy single-string OR comma-separated list (HP7 bifamigliare =
+    # 1 camera + 2 monitors in two separate apartments).
+    monitor_serials: list[str] = []
+    if isinstance(monitor_serial_raw, str):
+        for chunk in monitor_serial_raw.split(","):
+            chunk = chunk.strip()
+            if chunk:
+                monitor_serials.append(chunk)
+    elif isinstance(monitor_serial_raw, (list, tuple)):
+        for chunk in monitor_serial_raw:
+            if isinstance(chunk, str) and chunk.strip():
+                monitor_serials.append(chunk.strip())
+    monitor_serial = monitor_serials or None
 
     try:
         api = Hp7Api(username, password, region, token=token)

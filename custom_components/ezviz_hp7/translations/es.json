@@ -118,6 +118,15 @@
       },
       "chime_sound_monitor": {
         "name": "Sonido Monitor Interior"
+      },
+      "dnd": {
+        "name": "No Molestar"
+      },
+      "privacy": {
+        "name": "Privacidad"
+      },
+      "defence": {
+        "name": "Armado"
       }
     },
     "camera": {
@@ -126,6 +135,14 @@
       },
       "live": {
         "name": "En Vivo"
+      }
+    },
+    "number": {
+      "chime_volume": {
+        "name": "Volumen Timbre"
+      },
+      "chime_volume_monitor": {
+        "name": "Volumen Monitor"
       }
     }
   },
@@ -155,7 +172,7 @@
     "step": {
       "init": {
         "title": "Opciones EZVIZ HP7 / CP7",
-        "description": "Introduce el serial del monitor interior para exponer un interruptor independiente para su timbre. Déjalo en blanco si no tienes monitor interior o no quieres gestionarlo.",
+        "description": "Introduce el serial del monitor interior (o varios serials separados por comas para HP7 bifamiliar) para exponer un interruptor por cada monitor. Vacío = sin monitor.",
         "data": {
           "monitor_serial": "Serial del monitor interior"
         }

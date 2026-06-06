@@ -280,17 +280,164 @@ class Hp7Api:
             return None
         return config.get("doorbell_enable") in (1, "1", True)
 
+    def get_chime_volume(self, serial: str) -> int | None:
+        """Return chime volume (0-7), or None on error."""
+        config = self._get_chime_config(serial)
+        if config is None:
+            return None
+        try:
+            return int(config.get("volume", 7))
+        except (TypeError, ValueError):
+            return None
+
+    def set_chime_volume(self, serial: str, volume: int) -> bool:
+        """Set ChimeMusic volume (0-7), preserving other fields."""
+        self.ensure_client()
+        if not self._client:
+            return False
+        volume = max(0, min(7, int(volume)))
+        current = self._get_chime_config(serial) or {}
+        config = {**self._CHIME_DEFAULTS, **current, "volume": volume}
+        value = json.dumps(config, separators=(",", ":"))
+        url = (
+            f"https://{self._url}/v3/devconfig/v1/keyValue"
+            f"/{serial}/1/op"
+        )
+        params = {"key": "ChimeMusic", "value": value}
+        try:
+            resp = self._client._session.put(url, params=params, timeout=15)
+            resp.raise_for_status()
+            return True
+        except (RequestException, ValueError) as exc:
+            _LOGGER.error("EZVIZ HP7: set_chime_volume failed: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # DND / Privacy / Defence — wrappers around pylocalapi calls
+    # ------------------------------------------------------------------
+
+    # SwitchType.PRIVACY (camera blackout) = 7.
+    _PRIVACY_SWITCH_TYPE = 7
+
+    def set_dnd(self, serial: str, enable: bool) -> bool:
+        """Toggle Do-Not-Disturb on the device."""
+        self.ensure_client()
+        if not self._client:
+            return False
+        try:
+            self._client.do_not_disturb(serial, enable=int(bool(enable)))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: do_not_disturb failed: %s", exc)
+            return False
+
+    def set_privacy(self, serial: str, enable: bool) -> bool:
+        """Toggle privacy (camera blackout) via switch_status."""
+        self.ensure_client()
+        if not self._client:
+            return False
+        try:
+            self._client.switch_status(
+                serial,
+                self._PRIVACY_SWITCH_TYPE,
+                bool(enable),
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: privacy switch_status failed: %s", exc)
+            return False
+
+    def set_defence(self, serial: str, enable: bool) -> bool:
+        """Arm (enable=True) or disarm (False) motion detection."""
+        self.ensure_client()
+        if not self._client:
+            return False
+        try:
+            self._client.set_camera_defence(serial, int(bool(enable)))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: set_camera_defence failed: %s", exc)
+            return False
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool | None:
+        """Loose bool coercion for cloud status fields (int/str/bool)."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("1", "true", "on", "yes", "y", "enable", "enabled"):
+                return True
+            if v in ("0", "false", "off", "no", "n", "disable", "disabled"):
+                return False
+        return None
+
+    def _read_extra_states(self, serial: str) -> dict[str, Any]:
+        """Read DND / privacy / defence state from a fresh get_device_infos."""
+        out: dict[str, Any] = {}
+        if not self._client:
+            return out
+        try:
+            info = self._client.get_device_infos(serial) or {}
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("EZVIZ HP7: extra states fetch failed: %s", exc)
+            return out
+
+        nodisturb = info.get("NODISTURB") or {}
+        if isinstance(nodisturb, dict):
+            enable = nodisturb.get("enable")
+            coerced = self._coerce_bool(enable)
+            if coerced is not None:
+                out["dnd_on"] = coerced
+
+        switches = info.get("SWITCH") or {}
+        if isinstance(switches, dict):
+            # `SWITCH` may map switchType → {enable: bool} OR be a list.
+            sw_list: list[dict[str, Any]] = []
+            if isinstance(switches, dict) and "switchStatusInfos" in switches:
+                sw_list = switches.get("switchStatusInfos") or []
+            elif isinstance(switches, list):
+                sw_list = switches
+            for sw in sw_list:
+                try:
+                    s_type = int(sw.get("type", -1))
+                except (TypeError, ValueError):
+                    continue
+                if s_type == self._PRIVACY_SWITCH_TYPE:
+                    coerced = self._coerce_bool(sw.get("enable"))
+                    if coerced is not None:
+                        out["privacy_on"] = coerced
+                    break
+
+        status = info.get("STATUS") or {}
+        if isinstance(status, dict):
+            global_status = status.get("globalStatus")
+            coerced = self._coerce_bool(global_status)
+            if coerced is not None:
+                out["defence_on"] = coerced
+        return out
+
     def get_status(
-        self, serial: str, monitor_serial: str | None = None
+        self,
+        serial: str,
+        monitor_serial: str | list[str] | None = None,
     ) -> dict[str, Any]:
         """Get current device status.
 
         Args:
             serial: Camera serial number.
-            monitor_serial: Optional indoor monitor serial for chime state.
+            monitor_serial: Optional indoor monitor serial(s). May be a single
+                string (legacy single-monitor setup) or a list of strings for
+                multi-monitor (e.g. HP7 bifamigliare).
 
         Returns:
-            Dictionary with device status and sensor readings.
+            Dictionary with device status and sensor readings. Extra keys for
+            multi-monitor: ``chime_is_on_monitors`` and
+            ``chime_volume_monitors`` are dicts keyed by monitor serial.
         """
         self.ensure_client()
         if not self._client:
@@ -320,15 +467,45 @@ class Hp7Api:
                 "local_ip": cam_status.get("local_ip") or wifi_info.get("address"),
             }
 
-            # Read chime state (won't break polling if it fails)
+            # Read chime state of the camera itself (best-effort).
             chime_on = self.get_chime_state(serial)
             if chime_on is not None:
                 status_data["chime_is_on"] = chime_on
+            chime_vol = self.get_chime_volume(serial)
+            if chime_vol is not None:
+                status_data["chime_volume"] = chime_vol
 
-            if monitor_serial:
-                monitor_chime = self.get_chime_state(monitor_serial)
-                if monitor_chime is not None:
-                    status_data["chime_is_on_monitor"] = monitor_chime
+            # Multi-monitor support: accept str or list and produce per-serial
+            # dicts so the entity layer can iterate.
+            monitors: list[str] = []
+            if isinstance(monitor_serial, str) and monitor_serial.strip():
+                monitors = [monitor_serial.strip()]
+            elif isinstance(monitor_serial, (list, tuple)):
+                monitors = [s.strip() for s in monitor_serial if isinstance(s, str) and s.strip()]
+            if monitors:
+                monitor_chimes: dict[str, bool] = {}
+                monitor_vols: dict[str, int] = {}
+                for ms in monitors:
+                    mc = self.get_chime_state(ms)
+                    if mc is not None:
+                        monitor_chimes[ms] = mc
+                    mv = self.get_chime_volume(ms)
+                    if mv is not None:
+                        monitor_vols[ms] = mv
+                if monitor_chimes:
+                    status_data["chime_is_on_monitors"] = monitor_chimes
+                    # Back-compat: keep the legacy single-monitor key when
+                    # exactly one monitor is configured.
+                    if len(monitor_chimes) == 1:
+                        status_data["chime_is_on_monitor"] = next(
+                            iter(monitor_chimes.values())
+                        )
+                if monitor_vols:
+                    status_data["chime_volume_monitors"] = monitor_vols
+
+            # Extra states best-effort (DND / privacy / defence).
+            extra = self._read_extra_states(serial)
+            status_data.update(extra)
 
             return status_data
 

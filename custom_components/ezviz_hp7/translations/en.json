@@ -118,6 +118,15 @@
       },
       "chime_sound_monitor": {
         "name": "Indoor Monitor Chime"
+      },
+      "dnd": {
+        "name": "Do Not Disturb"
+      },
+      "privacy": {
+        "name": "Privacy"
+      },
+      "defence": {
+        "name": "Armed"
       }
     },
     "camera": {
@@ -126,6 +135,14 @@
       },
       "live": {
         "name": "Live"
+      }
+    },
+    "number": {
+      "chime_volume": {
+        "name": "Doorbell Volume"
+      },
+      "chime_volume_monitor": {
+        "name": "Monitor Volume"
       }
     }
   },
@@ -155,7 +172,7 @@
     "step": {
       "init": {
         "title": "EZVIZ HP7 / CP7 options",
-        "description": "Enter the serial of the indoor monitor to expose a separate switch for its chime. Leave empty if you don't have an indoor monitor or don't want to manage it.",
+        "description": "Enter the indoor monitor serial (or several serials separated by commas for the HP7 two-family setup) to expose a dedicated switch per monitor. Empty = no monitor.",
         "data": {
           "monitor_serial": "Indoor monitor serial"
         }

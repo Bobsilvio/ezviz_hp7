@@ -6,7 +6,7 @@ CONF_SERIAL = "serial"
 CONF_MONITOR_SERIAL = "monitor_serial"
 
 # Platforms to set up
-PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch"]
+PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
 
 # Poll interval in seconds. 2 s was aggressive enough to trigger HTTP 500 from
 # the EZVIZ pagelist endpoint under load (see issue #25); 15 s matches Pedro's
