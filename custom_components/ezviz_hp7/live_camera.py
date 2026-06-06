@@ -1,43 +1,54 @@
 """Live video camera entity for the HP7 / CP7 — VTM cloud relay path.
 
-The HP7 doesn't speak the Hik-Connect UDP P2P transport that Pedro's
-go2rtc fork uses (his test hardware was a server-grade 4K NVR with a
-keep-alive UDP P2P session; consumer doorbells dropped behind a NAT do
-not register on the P2P cloud at all). Live-validated 2026-06-06 by
-Bobsilvio: every P2P_SETUP response on every advertised P2P server came
-back as a bare ClientID ack with no 0xFF sub-TLV — the cloud simply
-cannot route a P2P_SETUP to an HP7.
+The HP7 / CP7 don't register on the Hikvision UDP P2P cloud (verified
+2026-06-06 against a live HP7: every P2P_SETUP response on the 5 cloud
+servers came back as a bare ClientID echo without the 0xFF sub-TLV — the
+cloud cannot route a P2P_SETUP to a consumer doorbell). The official
+EZVIZ app streams them through the VTM cloud relay: a TCP ysproto
+session delivering MPEG-PS that wraps H.264 video (PES stream_id 0xE0)
+and AAC-LC 16 kHz mono audio that ships as AAC-ADTS but is mis-labelled
+inside the PES as MP2 (stream_id 0xC0). The standard ffmpeg `mpeg`
+demuxer therefore rejects every audio packet.
 
-The official EZVIZ app streams the HP7 through the **VTM relay**: a TCP
-ysproto session that delivers MPEG-PS (H.264 video + MP2 audio). Renier's
-pyEzvizApi already implements this pipeline; this module wires
-``pylocalapi.cloud_stream.open_cloud_stream`` into a per-entry TCP relay
-that Home Assistant's Stream component can consume.
+Per viewing session this module:
 
-Architecture per viewing session:
+    HP7  ->  VTM cloud (ysproto://...:8554/live)
+        |
+        v  VtmStreamClient.iter_payloads()  (sync, executor thread)
+        |
+        v  _pes.PesParser  (Python MPEG-PS PES splitter)
+        |
+        +--->  video bytes ->  queue.Queue  ->  TCP 127.0.0.1:V
+        +--->  audio bytes ->  queue.Queue  ->  TCP 127.0.0.1:A
+                                                |
+                                                v
+        ffmpeg subprocess:
+            -f h264 -i tcp://127.0.0.1:V
+            -f aac  -i tcp://127.0.0.1:A
+            -c:v copy -c:a aac -ar 16000 -ac 1 -b:a 32k
+            -max_interleave_delta 0 -f mpegts pipe:1
+        (stdout) ->  TCP relay 127.0.0.1:<port>  ->  HA Stream / HLS
 
-    HP7  →  VTM cloud (ysproto://...:8554/live)
-        |
-        v  VtmStreamClient.iter_payloads()  (sync iterator)
-    pylocalapi (executor thread)
-        |
-        v  MPEG-PS bytes  ──>  queue.Queue
-    asyncio drain task
-        |
-        v  ffmpeg stdin (-f mpeg -i pipe:0 -c:v copy -c:a aac -f mpegts pipe:1)
-    ffmpeg subprocess
-        |
-        v  MPEG-TS bytes  ──>  127.0.0.1:<port> TCP socket
-        v
-    HA Stream component / HLS / WebRTC
+The audio leg is re-encoded (rather than `copy`) so the MPEG-TS muxer
+gets the AudioSpecificConfig extradata that ADTS strips, and
+`-use_wallclock_as_timestamps 1` gives ffmpeg something to anchor on
+since the raw h264/aac inputs carry no container timestamps.
+
+A circuit breaker rate-limits accept attempts: MIN_RETRY_INTERVAL = 30 s,
+LOCKOUT_THRESHOLD = 3 consecutive failures flips to LOCKOUT_BACKOFF
+(10 min). HA's Stream component is happy to reconnect every few seconds
+when an upstream stream errors; without this throttle a single bad
+config could lock the EZVIZ account in under a minute.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import queue
+import socket
 import threading
-from typing import TYPE_CHECKING, Any, Optional
+from contextlib import closing
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
@@ -45,6 +56,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from ._pes import PesParser
 from .const import DOMAIN
 from .pylocalapi.cloud_stream import open_cloud_stream
 
@@ -53,29 +65,131 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# How long to wait for ffmpeg to flush its stdin/stdout when tearing down.
+VIDEO_STREAM_ID = 0xE0
+AUDIO_STREAM_ID = 0xC0
+
 FFMPEG_KILL_TIMEOUT = 2.0
-
-# Bytes read at a time from ffmpeg stdout when forwarding to the TCP socket.
 RELAY_CHUNK = 65536
+PAYLOAD_QUEUE_SIZE = 256
 
-# Max bytes in the producer → consumer hand-off queue. Roughly one second of
-# 4 Mbit/s video; new packets are dropped if HA falls behind.
-PAYLOAD_QUEUE_SIZE = 128
+MIN_RETRY_INTERVAL = 30.0
+LOCKOUT_THRESHOLD = 3
+LOCKOUT_BACKOFF = 600.0
 
-# Rate-limit defaults — the EZVIZ cloud temporarily locks accounts after a
-# small handful of failed/repeated login attempts (error 1015). HA's Stream
-# component is happy to reconnect every few seconds when an upstream stream
-# errors, so without a circuit breaker here a single bad config can lock the
-# account in under a minute.
-MIN_RETRY_INTERVAL = 30.0  # seconds between connection attempts
-LOCKOUT_THRESHOLD = 3  # consecutive failures before backing off harder
-LOCKOUT_BACKOFF = 600.0  # seconds (10 min) once threshold is hit
+INPUT_ACCEPT_TIMEOUT = 20.0
+
+
+def _free_local_port() -> int:
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _start_local_listener(port: int) -> socket.socket:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(1)
+    return s
+
+
+def _reader_thread(
+    vtm: Any,
+    v_q: "queue.Queue[Optional[bytes]]",
+    a_q: "queue.Queue[Optional[bytes]]",
+    stop: threading.Event,
+) -> None:
+    """Drain VtmStreamClient -> PesParser -> push per-stream bytes into queues."""
+    parser = PesParser()
+    v_bytes = 0
+    a_bytes = 0
+    try:
+        for body in vtm.iter_payloads():
+            if stop.is_set():
+                break
+            if not body:
+                continue
+            for stream_id, payload in parser.feed(body):
+                if not payload:
+                    continue
+                if stream_id == VIDEO_STREAM_ID:
+                    try:
+                        v_q.put(payload, timeout=2.0)
+                        v_bytes += len(payload)
+                    except queue.Full:
+                        pass
+                elif stream_id == AUDIO_STREAM_ID:
+                    try:
+                        a_q.put(payload, timeout=2.0)
+                        a_bytes += len(payload)
+                    except queue.Full:
+                        pass
+    except Exception as exc:
+        _LOGGER.debug("Hp7StreamRelay: reader stopped: %s", exc)
+    finally:
+        for q in (v_q, a_q):
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+        _LOGGER.debug(
+            "Hp7StreamRelay: reader done video=%d B audio=%d B yielded=%d resync_drops=%d",
+            v_bytes, a_bytes, parser.packets_yielded, parser.resync_drops,
+        )
+
+
+def _sender_thread(
+    listener: socket.socket,
+    q: "queue.Queue[Optional[bytes]]",
+    stop: threading.Event,
+    label: str,
+) -> None:
+    """Wait for ffmpeg to connect, then forward the queue into that socket."""
+    try:
+        listener.settimeout(INPUT_ACCEPT_TIMEOUT)
+        try:
+            conn, peer = listener.accept()
+        except socket.timeout:
+            _LOGGER.warning(
+                "Hp7StreamRelay: ffmpeg %s input accept timed out", label
+            )
+            return
+        _LOGGER.debug("Hp7StreamRelay: %s accepted from %s", label, peer)
+    finally:
+        try:
+            listener.close()
+        except OSError:
+            pass
+
+    sent = 0
+    try:
+        while not stop.is_set():
+            try:
+                payload = q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if payload is None:
+                return
+            try:
+                conn.sendall(payload)
+                sent += len(payload)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+    finally:
+        _LOGGER.debug("Hp7StreamRelay: %s sender done (%d B sent)", label, sent)
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
 
 
 class Hp7StreamRelay:
-    """Per-entry TCP server that, on each accept, opens one VTM cloud session
-    and forwards muxed MPEG-TS to the connected client (HA Stream component)."""
+    """Per-entry TCP server. Each accept opens a VTM session and forwards
+    muxed MPEG-TS (H.264 + AAC) to the connected client (HA Stream component)."""
 
     def __init__(
         self,
@@ -90,7 +204,6 @@ class Hp7StreamRelay:
         self._ffmpeg_path = ffmpeg_path
         self._server: Optional[asyncio.AbstractServer] = None
         self._port: int = 0
-        # Rate-limit state.
         self._last_attempt: float = 0.0
         self._last_error: Optional[str] = None
         self._consecutive_failures: int = 0
@@ -114,8 +227,7 @@ class Hp7StreamRelay:
         self._port = int(sock.getsockname()[1])
         _LOGGER.debug(
             "Hp7StreamRelay listening on tcp://127.0.0.1:%d (serial=%s)",
-            self._port,
-            self._serial,
+            self._port, self._serial,
         )
 
     async def stop(self) -> None:
@@ -153,9 +265,7 @@ class Hp7StreamRelay:
             _LOGGER.warning(
                 "Hp7StreamRelay: rate-limited (last error: %s; %d consecutive "
                 "failures; refusing for another %.0fs)",
-                self._last_error,
-                self._consecutive_failures,
-                wait,
+                self._last_error, self._consecutive_failures, wait,
             )
             try:
                 writer.close()
@@ -167,22 +277,20 @@ class Hp7StreamRelay:
         loop = asyncio.get_event_loop()
         vtm = None
         proc: Optional[asyncio.subprocess.Process] = None
-        feed_task: Optional[asyncio.Task] = None
-        reader_thread: Optional[threading.Thread] = None
+        v_listener: Optional[socket.socket] = None
+        a_listener: Optional[socket.socket] = None
+        threads: List[threading.Thread] = []
         stop_event = threading.Event()
-        payload_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
-            maxsize=PAYLOAD_QUEUE_SIZE
-        )
 
         async with self._connect_lock:
             self._last_attempt = loop.time()
             try:
-                # Ensure the cached EzvizClient is logged in. The coordinator
-                # owns the long-lived client; we only borrow it for VTM bootstrap.
                 await loop.run_in_executor(None, self._api.ensure_client)
                 ezviz_client = self._api._client
                 if ezviz_client is None:
-                    raise RuntimeError("EzvizClient unavailable after ensure_client()")
+                    raise RuntimeError(
+                        "EzvizClient unavailable after ensure_client()"
+                    )
 
                 vtm = await loop.run_in_executor(
                     None,
@@ -193,8 +301,7 @@ class Hp7StreamRelay:
                 info = await loop.run_in_executor(None, vtm.start)
                 _LOGGER.info(
                     "Hp7StreamRelay: VTM stream up (serial=%s ssn=%s)",
-                    self._serial,
-                    getattr(info, "streamssn", "?"),
+                    self._serial, getattr(info, "streamssn", "?"),
                 )
                 self._consecutive_failures = 0
                 self._last_error = None
@@ -203,9 +310,7 @@ class Hp7StreamRelay:
                 self._last_error = str(exc)
                 _LOGGER.warning(
                     "Hp7StreamRelay: VTM connect failed (%d/%d): %s",
-                    self._consecutive_failures,
-                    LOCKOUT_THRESHOLD,
-                    exc,
+                    self._consecutive_failures, LOCKOUT_THRESHOLD, exc,
                 )
                 if vtm is not None:
                     try:
@@ -220,42 +325,66 @@ class Hp7StreamRelay:
                 return
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            v_port = _free_local_port()
+            a_port = _free_local_port()
+            v_listener = _start_local_listener(v_port)
+            a_listener = _start_local_listener(a_port)
+
+            cmd = [
                 self._ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-fflags",
-                "+genpts+nobuffer",
-                "-flags",
-                "low_delay",
-                "-f",
-                "mpeg",
-                "-i",
-                "pipe:0",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "64k",
-                "-f",
-                "mpegts",
-                "pipe:1",
-                stdin=asyncio.subprocess.PIPE,
+                "-hide_banner", "-loglevel", "error",
+                "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
+                "-analyzeduration", "200000", "-probesize", "200000",
+                "-use_wallclock_as_timestamps", "1",
+                "-f", "h264", "-r", "15",
+                "-i", f"tcp://127.0.0.1:{v_port}",
+                "-analyzeduration", "200000", "-probesize", "200000",
+                "-use_wallclock_as_timestamps", "1",
+                "-f", "aac",
+                "-i", f"tcp://127.0.0.1:{a_port}",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy",
+                # Re-encode audio so the mpegts muxer gets a proper AAC
+                # AudioSpecificConfig extradata (the inbound ADTS strips it).
+                "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+                "-max_interleave_delta", "0",
+                "-f", "mpegts", "pipe:1",
+            ]
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
 
-            reader_thread = threading.Thread(
-                target=self._read_vtm_into_queue,
-                args=(vtm, payload_q, stop_event),
-                name=f"hp7-vtm-{self._serial}",
+            v_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
+                maxsize=PAYLOAD_QUEUE_SIZE
+            )
+            a_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
+                maxsize=PAYLOAD_QUEUE_SIZE
+            )
+
+            reader_t = threading.Thread(
+                target=_reader_thread,
+                args=(vtm, v_q, a_q, stop_event),
+                name=f"hp7-vtm-reader-{self._serial}",
                 daemon=True,
             )
-            reader_thread.start()
-
-            feed_task = asyncio.create_task(self._feed_ffmpeg(proc, payload_q))
+            v_sender_t = threading.Thread(
+                target=_sender_thread,
+                args=(v_listener, v_q, stop_event, "video"),
+                name=f"hp7-vtm-vsend-{self._serial}",
+                daemon=True,
+            )
+            a_sender_t = threading.Thread(
+                target=_sender_thread,
+                args=(a_listener, a_q, stop_event, "audio"),
+                name=f"hp7-vtm-asend-{self._serial}",
+                daemon=True,
+            )
+            threads = [reader_t, v_sender_t, a_sender_t]
+            for t in threads:
+                t.start()
 
             assert proc.stdout is not None
             while True:
@@ -270,23 +399,11 @@ class Hp7StreamRelay:
         except Exception as exc:
             _LOGGER.warning(
                 "Hp7StreamRelay: stream error for serial=%s: %s",
-                self._serial,
-                exc,
+                self._serial, exc,
             )
         finally:
             stop_event.set()
-            if feed_task is not None and not feed_task.done():
-                feed_task.cancel()
-                try:
-                    await feed_task
-                except (asyncio.CancelledError, Exception):
-                    pass
             if proc is not None:
-                try:
-                    if proc.stdin is not None and not proc.stdin.is_closing():
-                        proc.stdin.close()
-                except Exception:
-                    pass
                 try:
                     proc.kill()
                 except ProcessLookupError:
@@ -300,8 +417,14 @@ class Hp7StreamRelay:
                     await loop.run_in_executor(None, vtm.close)
                 except Exception:
                     pass
-            if reader_thread is not None:
-                reader_thread.join(timeout=2.0)
+            for listener in (v_listener, a_listener):
+                if listener is not None:
+                    try:
+                        listener.close()
+                    except OSError:
+                        pass
+            for t in threads:
+                t.join(timeout=2.0)
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -309,67 +432,9 @@ class Hp7StreamRelay:
                 pass
             _LOGGER.debug("Hp7StreamRelay: client %s closed", peer)
 
-    @staticmethod
-    def _read_vtm_into_queue(
-        vtm: Any,
-        q: "queue.Queue[Optional[bytes]]",
-        stop_event: threading.Event,
-    ) -> None:
-        """Drain the VTM iterator into the hand-off queue. Runs in a thread."""
-        try:
-            for body in vtm.iter_payloads():
-                if stop_event.is_set():
-                    break
-                if not body:
-                    continue
-                try:
-                    q.put(body, timeout=2.0)
-                except queue.Full:
-                    # Consumer fell behind; drop oldest by clearing one slot
-                    # so we can put the fresh chunk. Better to drop than stall.
-                    try:
-                        q.get_nowait()
-                        q.put_nowait(body)
-                    except (queue.Empty, queue.Full):
-                        pass
-        except Exception as exc:
-            _LOGGER.warning("Hp7StreamRelay: VTM iterator stopped: %s", exc)
-        finally:
-            try:
-                q.put_nowait(None)
-            except queue.Full:
-                pass
-
-    @staticmethod
-    async def _feed_ffmpeg(
-        proc: asyncio.subprocess.Process,
-        q: "queue.Queue[Optional[bytes]]",
-    ) -> None:
-        """Drain the queue into ffmpeg stdin. Runs on the asyncio loop."""
-        loop = asyncio.get_event_loop()
-        assert proc.stdin is not None
-        try:
-            while True:
-                body = await loop.run_in_executor(None, q.get)
-                if body is None:
-                    return
-                if proc.stdin.is_closing():
-                    return
-                try:
-                    proc.stdin.write(body)
-                    await proc.stdin.drain()
-                except (BrokenPipeError, ConnectionResetError):
-                    return
-        finally:
-            try:
-                if proc.stdin is not None and not proc.stdin.is_closing():
-                    proc.stdin.close()
-            except Exception:
-                pass
-
 
 class Hp7LiveCamera(Camera):
-    """Live H.264 stream from the HP7/CP7 via the VTM cloud relay."""
+    """Live H.264 + AAC stream from the HP7/CP7 via the VTM cloud relay."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "live"
@@ -384,13 +449,11 @@ class Hp7LiveCamera(Camera):
     @property
     def device_info(self) -> DeviceInfo:
         from .device_info import make_device_info
-
         return make_device_info(self._serial, self._model)
 
     @property
     def supported_features(self) -> int:
         from homeassistant.components.camera import CameraEntityFeature
-
         return CameraEntityFeature.STREAM
 
     async def stream_source(self) -> Optional[str]:

@@ -55,8 +55,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> "OptionsFlow":
-        """Return the options flow."""
-        return OptionsFlow(config_entry)
+        """Return the options flow.
+
+        Home Assistant 2024.12+ injects `config_entry` automatically as a
+        base-class property — we must not pass it to the constructor or
+        assign it from a subclass, or the UI gets a 500.
+        """
+        return OptionsFlow()
 
     def __init__(self) -> None:
         """Initialize config flow."""
@@ -232,10 +237,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlow(config_entries.OptionsFlow):
-    """Options flow to configure optional indoor monitor serial."""
+    """Options flow to configure optional indoor monitor serial.
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    Note: do NOT assign `self.config_entry` in __init__ — Home Assistant
+    2024.12+ makes that a base-class property and assigning to it from a
+    subclass raises and surfaces in the UI as 500 "Server got itself in
+    trouble".
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

@@ -2,13 +2,17 @@
 """Standalone tester for the VTM cloud relay path (TCP / MPEG-PS).
 
 The HP7 is a NAT-bound consumer doorbell that does NOT register on the
-Hikvision UDP P2P cloud — the P2P_SETUP responses always come back as bare
-ClientID acks (no 0xFF sub-TLV, no device port). The official EZVIZ app
-streams it through the VTM relay (cloud TCP transport, MPEG-PS payload),
-which is what Renier's pyEzvizApi already implements and which the vendored
-pylocalapi/cloud_stream + pylocalapi/stream snapshot in this repo carries.
+Hikvision UDP P2P cloud. The official EZVIZ app streams it through the
+VTM relay: a TCP ysproto session delivering MPEG-PS. Inside, the PES
+carries H.264 (stream_id 0xE0) and AAC ADTS audio mis-labelled as MP2
+(stream_id 0xC0).
 
-This CLI exercises that exact path:
+This CLI parses the MPEG-PS in Python, hands the video and audio
+elementary streams to ffmpeg via two local TCP sockets (one per input,
+ffmpeg opens them as clients in parallel — FIFOs deadlock because
+ffmpeg probes the first input synchronously before opening the second),
+and exposes a clean MPEG-TS (H.264 + AAC) on a third local TCP port so
+VLC / ffplay can attach:
 
     cd /path/to/ezviz_hp7
     python3 tools/hp7_vtm.py \
@@ -17,24 +21,21 @@ This CLI exercises that exact path:
         --region eu \
         --serial BE7062577-BE6963574
 
-Then open VLC -> File -> Open Network Stream -> tcp://127.0.0.1:<port>
-(the port is printed once ffmpeg starts listening).
+Then open VLC -> File -> Open Network Stream -> tcp://127.0.0.1:<port>.
 
-Credentials can also come from EZVIZ_ACCOUNT / EZVIZ_PASSWORD /
-EZVIZ_REGION / EZVIZ_SERIAL env vars so the password never lands in shell
-history.
+Credentials can come from EZVIZ_ACCOUNT / EZVIZ_PASSWORD / EZVIZ_REGION
+/ EZVIZ_SERIAL env vars so the password never lands in shell history.
 
-Requirements:
-- ffmpeg in $PATH
-- Python deps already used by the integration: requests, pycryptodome,
-  cryptography, xmltodict, paho-mqtt, pandas (the pylocalapi snapshot
-  imports several of these at module load).
+Requirements: ffmpeg in $PATH; the Python deps the integration already
+needs (requests, pycryptodome, cryptography, xmltodict, paho-mqtt,
+pandas).
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import os
+import queue
 import shutil
 import signal
 import socket
@@ -46,10 +47,10 @@ from contextlib import closing
 from pathlib import Path
 from typing import Optional
 
-# Make the integration package importable when run from the repo root.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components" / "ezviz_hp7"))
 
+from _pes import PesParser  # noqa: E402
 from pylocalapi.client import EzvizClient  # noqa: E402
 from pylocalapi.cloud_stream import open_cloud_stream  # noqa: E402
 
@@ -62,6 +63,9 @@ REGION_URLS = {
     "ru": "apirus.ezvizru.com",
 }
 
+VIDEO_STREAM_ID = 0xE0
+AUDIO_STREAM_ID = 0xC0
+
 
 def _free_port() -> int:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
@@ -69,28 +73,123 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _feed_loop(vtm, proc: subprocess.Popen, stop: threading.Event) -> int:
-    sent = 0
-    assert proc.stdin is not None
+def _accept_one(server_sock: socket.socket, label: str) -> socket.socket:
+    """Block until ffmpeg connects to our local listener; return the conn socket."""
+    conn, peer = server_sock.accept()
+    logging.info("hp7_vtm: %s accepted from %s", label, peer)
+    return conn
+
+
+def _start_listener(port: int) -> socket.socket:
+    """Create a listening TCP socket on 127.0.0.1:port."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(1)
+    return s
+
+
+def _reader_thread(
+    vtm,
+    v_q: "queue.Queue[Optional[bytes]]",
+    a_q: "queue.Queue[Optional[bytes]]",
+    stop: threading.Event,
+) -> None:
+    """Drain VTM payloads → PES split → push per-stream bytes into queues.
+
+    Runs independently of the per-stream senders so the reader doesn't
+    stall on a single slow consumer (ffmpeg probes the first input
+    synchronously before opening the second, so video must keep flowing
+    while we're still waiting for ffmpeg to connect to the audio input).
+    """
+    parser = PesParser()
+    v_bytes = 0
+    a_bytes = 0
     try:
         for body in vtm.iter_payloads():
             if stop.is_set():
                 break
             if not body:
                 continue
+            for stream_id, payload in parser.feed(body):
+                if not payload:
+                    continue
+                if stream_id == VIDEO_STREAM_ID:
+                    try:
+                        v_q.put(payload, timeout=2.0)
+                        v_bytes += len(payload)
+                    except queue.Full:
+                        pass
+                elif stream_id == AUDIO_STREAM_ID:
+                    try:
+                        a_q.put(payload, timeout=2.0)
+                        a_bytes += len(payload)
+                    except queue.Full:
+                        pass
+    except Exception as exc:
+        logging.warning("hp7_vtm: reader loop error: %s", exc)
+    finally:
+        # Sentinels so the senders unblock.
+        for q in (v_q, a_q):
             try:
-                proc.stdin.write(body)
-                proc.stdin.flush()
-                sent += len(body)
-            except (BrokenPipeError, ValueError):
-                break
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+        logging.info(
+            "hp7_vtm: reader done; video=%d B audio=%d B yielded=%d resync_drops=%d",
+            v_bytes,
+            a_bytes,
+            parser.packets_yielded,
+            parser.resync_drops,
+        )
+
+
+def _sender_thread(
+    listener: socket.socket,
+    q: "queue.Queue[Optional[bytes]]",
+    stop: threading.Event,
+    label: str,
+) -> None:
+    """Wait for ffmpeg to connect, then forward the queue into that socket."""
+    try:
+        listener.settimeout(20.0)
+        try:
+            conn, peer = listener.accept()
+        except socket.timeout:
+            logging.warning("hp7_vtm: %s accept timed out", label)
+            return
+        logging.info("hp7_vtm: %s accepted from %s", label, peer)
     finally:
         try:
-            if proc.stdin is not None and not proc.stdin.closed:
-                proc.stdin.close()
-        except Exception:
+            listener.close()
+        except OSError:
             pass
-    return sent
+
+    sent = 0
+    try:
+        while not stop.is_set():
+            try:
+                payload = q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if payload is None:
+                return
+            try:
+                conn.sendall(payload)
+                sent += len(payload)
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                logging.warning("hp7_vtm: %s send error: %s", label, exc)
+                return
+    finally:
+        logging.info("hp7_vtm: %s sender done (%d B sent)", label, sent)
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,18 +207,12 @@ def parse_args() -> argparse.Namespace:
         "--port",
         type=int,
         default=0,
-        help="Local TCP port; default = pick a free one",
+        help="Local TCP output port for VLC; default = pick a free one",
     )
     p.add_argument(
         "--ffmpeg",
         default=shutil.which("ffmpeg") or "ffmpeg",
         help="Path to ffmpeg binary",
-    )
-    p.add_argument(
-        "--input-format",
-        default="mpeg",
-        choices=("mpeg", "mpegts", "hevc"),
-        help="ffmpeg -f for the stdin payload (mpeg=MPEG-PS, default)",
     )
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
@@ -127,16 +220,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.verbose:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-    else:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s: %(message)s",
-        )
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     missing = [
         name
@@ -150,8 +237,7 @@ def main() -> int:
     if missing:
         print(
             f"Missing required arg(s): {', '.join(missing)}.\n"
-            "Pass them via --account / --password / --serial or env vars "
-            "EZVIZ_ACCOUNT / EZVIZ_PASSWORD / EZVIZ_SERIAL.",
+            "Pass them via --account / --password / --serial or env vars.",
             file=sys.stderr,
         )
         return 2
@@ -165,37 +251,29 @@ def main() -> int:
     except Exception as exc:
         print(f"[hp7_vtm] login FAIL: {exc}", file=sys.stderr)
         return 1
-    print(f"[hp7_vtm] login OK, sessionId={(client._token.get('session_id') or '')[:12]}…")
+    print("[hp7_vtm] login OK")
 
     print(f"[hp7_vtm] open_cloud_stream(serial={args.serial}, channel={args.channel})…")
     try:
         vtm = open_cloud_stream(client, args.serial, channel=args.channel)
-    except Exception as exc:
-        print(f"[hp7_vtm] open_cloud_stream FAIL: {exc}", file=sys.stderr)
-        try:
-            client.logout()
-        except Exception:
-            pass
-        return 1
-
-    print(f"[hp7_vtm] VTM stream URL bootstrapped: {vtm.stream_url}")
-    print(f"[hp7_vtm] vtm.start()… (handshake + redirect chain)")
-    try:
         info = vtm.start()
     except Exception as exc:
-        print(f"[hp7_vtm] vtm.start() FAIL: {exc}", file=sys.stderr)
-        try:
-            vtm.close()
-        except Exception:
-            pass
+        print(f"[hp7_vtm] VTM bootstrap FAIL: {exc}", file=sys.stderr)
         try:
             client.logout()
         except Exception:
             pass
         return 1
-    print(f"[hp7_vtm] StreamInfoRsp: result={info.result} streamssn={info.streamssn!r}")
+    print(f"[hp7_vtm] VTM up: ssn={info.streamssn!r}")
 
-    port = args.port or _free_port()
+    # Three TCP ports: video input, audio input, MPEG-TS output for VLC.
+    v_port = _free_port()
+    a_port = _free_port()
+    out_port = args.port or _free_port()
+
+    v_listener = _start_listener(v_port)
+    a_listener = _start_listener(a_port)
+
     cmd = [
         args.ffmpeg,
         "-hide_banner",
@@ -205,33 +283,83 @@ def main() -> int:
         "+genpts+nobuffer",
         "-flags",
         "low_delay",
+        "-analyzeduration",
+        "200000",
+        "-probesize",
+        "200000",
+        "-use_wallclock_as_timestamps",
+        "1",
         "-f",
-        args.input_format,
+        "h264",
+        "-r",
+        "15",
         "-i",
-        "pipe:0",
+        f"tcp://127.0.0.1:{v_port}",
+        "-analyzeduration",
+        "200000",
+        "-probesize",
+        "200000",
+        "-use_wallclock_as_timestamps",
+        "1",
+        "-f",
+        "aac",
+        "-i",
+        f"tcp://127.0.0.1:{a_port}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
         "-c:v",
         "copy",
+        # Re-encode audio so the mpegts muxer gets proper AAC extradata in
+        # the PMT (the inbound ADTS stream loses its AudioSpecificConfig when
+        # passed through "copy"). Cost is trivial for a 16 kHz mono talk
+        # stream.
         "-c:a",
         "aac",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
         "-b:a",
-        "64k",
+        "32k",
+        "-max_interleave_delta",
+        "0",
         "-f",
         "mpegts",
-        f"tcp://127.0.0.1:{port}?listen=1",
+        f"tcp://127.0.0.1:{out_port}?listen=1",
     ]
-    print(f"[hp7_vtm] Spawning ffmpeg → tcp://127.0.0.1:{port}")
+
+    print(f"[hp7_vtm] Spawning ffmpeg")
+    print(f"[hp7_vtm]   video input  -> tcp://127.0.0.1:{v_port} (Python listen)")
+    print(f"[hp7_vtm]   audio input  -> tcp://127.0.0.1:{a_port} (Python listen)")
+    print(f"[hp7_vtm]   output       -> tcp://127.0.0.1:{out_port} (ffmpeg listen)")
     print()
-    print(f"  Open VLC:  tcp://127.0.0.1:{port}")
-    print(f"  Or:        ffplay -fflags +nobuffer tcp://127.0.0.1:{port}")
+    print(f"  Open VLC:  tcp://127.0.0.1:{out_port}")
+    print(f"  Or:        ffplay -fflags +nobuffer tcp://127.0.0.1:{out_port}")
     print()
+    print("Wait ~3 s after seeing 'Output #0 to tcp://...' from ffmpeg.")
     print("Press Ctrl-C to stop.")
     print()
 
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stderr=sys.stderr)
 
     stop = threading.Event()
-    feed_thread = threading.Thread(target=_feed_loop, args=(vtm, proc, stop), daemon=True)
-    feed_thread.start()
+    v_q: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=128)
+    a_q: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=128)
+
+    reader_t = threading.Thread(
+        target=_reader_thread, args=(vtm, v_q, a_q, stop), daemon=True
+    )
+    video_sender_t = threading.Thread(
+        target=_sender_thread, args=(v_listener, v_q, stop, "video"), daemon=True
+    )
+    audio_sender_t = threading.Thread(
+        target=_sender_thread, args=(a_listener, a_q, stop, "audio"), daemon=True
+    )
+    reader_t.start()
+    video_sender_t.start()
+    audio_sender_t.start()
 
     def _on_signal(*_) -> None:
         stop.set()
@@ -241,7 +369,7 @@ def main() -> int:
 
     rc = 0
     try:
-        while feed_thread.is_alive() and proc.poll() is None:
+        while reader_t.is_alive() and proc.poll() is None:
             time.sleep(0.5)
             if stop.is_set():
                 break
