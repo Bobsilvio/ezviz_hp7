@@ -114,7 +114,10 @@
     },
     "switch": {
       "chime_sound": {
-        "name": "Sonido Monitor"
+        "name": "Sonido Timbre"
+      },
+      "chime_sound_monitor": {
+        "name": "Sonido Monitor Interior"
       }
     }
   },
@@ -136,6 +139,17 @@
         "serial": {
           "name": "Número de serie",
           "description": "Número de serie del dispositivo"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opciones EZVIZ HP7",
+        "description": "Introduce el serial del monitor interior para exponer un interruptor independiente para su timbre. Déjalo en blanco si no tienes monitor interior o no quieres gestionarlo.",
+        "data": {
+          "monitor_serial": "Serial del monitor interior"
         }
       }
     }

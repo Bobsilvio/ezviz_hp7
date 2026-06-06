@@ -101,7 +101,10 @@
     },
     "switch": {
       "chime_sound": {
-        "name": "Suono Monitor"
+        "name": "Suono Campanello"
+      },
+      "chime_sound_monitor": {
+        "name": "Suono Monitor Interno"
       }
     }
   },
@@ -123,6 +126,17 @@
         "serial": {
           "name": "Numero di serie",
           "description": "Numero di serie del dispositivo"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni EZVIZ HP7",
+        "description": "Inserisci il serial del monitor interno per esporre uno switch separato per il suo cicalino. Lascia vuoto se non hai un monitor interno o non vuoi gestirlo.",
+        "data": {
+          "monitor_serial": "Serial monitor interno"
         }
       }
     }

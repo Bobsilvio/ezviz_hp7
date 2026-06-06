@@ -3,6 +3,7 @@
 DOMAIN = "ezviz_hp7"
 CONF_REGION = "region"
 CONF_SERIAL = "serial"
+CONF_MONITOR_SERIAL = "monitor_serial"
 
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch"]

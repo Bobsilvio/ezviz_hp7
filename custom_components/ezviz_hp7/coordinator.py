@@ -28,13 +28,15 @@ class Hp7Coordinator(DataUpdateCoordinator):
         hass: HomeAssistant,
         api: Hp7Api,
         serial: str,
+        monitor_serial: str | None = None,
     ) -> None:
         """Initialize coordinator.
-        
+
         Args:
             hass: Home Assistant instance.
             api: EZVIZ HP7 API instance.
-            serial: Device serial number.
+            serial: Camera serial number.
+            monitor_serial: Optional indoor monitor serial.
         """
         super().__init__(
             hass,
@@ -44,15 +46,16 @@ class Hp7Coordinator(DataUpdateCoordinator):
         )
         self.api = api
         self.serial = serial
+        self.monitor_serial = monitor_serial
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest device status from API.
-        
+
         Called periodically to update all coordinator data.
-        
+
         Returns:
             Device status dictionary with sensor values.
         """
         return await self.hass.async_add_executor_job(
-            self.api.get_status, self.serial
+            self.api.get_status, self.serial, self.monitor_serial
         )

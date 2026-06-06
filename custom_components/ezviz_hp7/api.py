@@ -280,11 +280,14 @@ class Hp7Api:
             return None
         return config.get("doorbell_enable") in (1, "1", True)
 
-    def get_status(self, serial: str) -> dict[str, Any]:
+    def get_status(
+        self, serial: str, monitor_serial: str | None = None
+    ) -> dict[str, Any]:
         """Get current device status.
 
         Args:
-            serial: Device serial number.
+            serial: Camera serial number.
+            monitor_serial: Optional indoor monitor serial for chime state.
 
         Returns:
             Dictionary with device status and sensor readings.
@@ -321,6 +324,11 @@ class Hp7Api:
             chime_on = self.get_chime_state(serial)
             if chime_on is not None:
                 status_data["chime_is_on"] = chime_on
+
+            if monitor_serial:
+                monitor_chime = self.get_chime_state(monitor_serial)
+                if monitor_chime is not None:
+                    status_data["chime_is_on_monitor"] = monitor_chime
 
             return status_data
 

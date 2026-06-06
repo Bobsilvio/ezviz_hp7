@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN, PLATFORMS
+from .const import DOMAIN, PLATFORMS, CONF_MONITOR_SERIAL
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
 
@@ -33,6 +33,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     region: str = entry.data["region"]
     serial: str = entry.data["serial"]
     token: dict[str, Any] | None = entry.data.get("token")
+    monitor_serial_raw = entry.options.get(
+        CONF_MONITOR_SERIAL, entry.data.get(CONF_MONITOR_SERIAL)
+    )
+    monitor_serial = (
+        monitor_serial_raw.strip()
+        if isinstance(monitor_serial_raw, str) and monitor_serial_raw.strip()
+        else None
+    )
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -42,7 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Failed to connect to EZVIZ HP7 API: %s", exc)
         raise ConfigEntryNotReady(f"Cannot connect to EZVIZ HP7: {exc}") from exc
 
-    coordinator = Hp7Coordinator(hass, api, serial)
+    coordinator = Hp7Coordinator(hass, api, serial, monitor_serial)
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as exc:
@@ -52,6 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "api": api,
         "serial": serial,
+        "monitor_serial": monitor_serial,
         "coordinator": coordinator,
     }
 

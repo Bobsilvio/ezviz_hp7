@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 
 from .api import Hp7Api
-from .const import DOMAIN, CONF_REGION, CONF_SERIAL
+from .const import DOMAIN, CONF_REGION, CONF_SERIAL, CONF_MONITOR_SERIAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +50,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for EZVIZ HP7 integration."""
 
     VERSION = 1
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "OptionsFlow":
+        """Return the options flow."""
+        return OptionsFlow(config_entry)
 
     def __init__(self) -> None:
         """Initialize config flow."""
@@ -222,3 +229,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data = {**(self._cached_creds or {}), CONF_SERIAL: serial}
         title = f"EZVIZ HP7 ({serial})"
         return self.async_create_entry(title=title, data=data)
+
+
+class OptionsFlow(config_entries.OptionsFlow):
+    """Options flow to configure optional indoor monitor serial."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage options."""
+        if user_input is not None:
+            monitor = (user_input.get(CONF_MONITOR_SERIAL) or "").strip()
+            return self.async_create_entry(
+                title="", data={CONF_MONITOR_SERIAL: monitor}
+            )
+
+        current = self.config_entry.options.get(
+            CONF_MONITOR_SERIAL,
+            self.config_entry.data.get(CONF_MONITOR_SERIAL, ""),
+        )
+        schema = vol.Schema(
+            {vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str}
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

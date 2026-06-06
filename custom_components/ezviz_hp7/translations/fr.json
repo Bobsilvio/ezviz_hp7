@@ -114,7 +114,10 @@
     },
     "switch": {
       "chime_sound": {
-        "name": "Son du Moniteur"
+        "name": "Son du Carillon"
+      },
+      "chime_sound_monitor": {
+        "name": "Son du Moniteur Intérieur"
       }
     }
   },
@@ -136,6 +139,17 @@
         "serial": {
           "name": "Numéro de série",
           "description": "Numéro de série de l'équipement"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options EZVIZ HP7",
+        "description": "Saisissez le numéro de série du moniteur intérieur pour exposer un interrupteur séparé pour son carillon. Laissez vide si vous n'avez pas de moniteur intérieur ou ne souhaitez pas le gérer.",
+        "data": {
+          "monitor_serial": "Numéro de série du moniteur intérieur"
         }
       }
     }

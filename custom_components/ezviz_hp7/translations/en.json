@@ -114,7 +114,10 @@
     },
     "switch": {
       "chime_sound": {
-        "name": "Monitor Sound"
+        "name": "Doorbell Chime"
+      },
+      "chime_sound_monitor": {
+        "name": "Indoor Monitor Chime"
       }
     }
   },
@@ -136,6 +139,17 @@
         "serial": {
           "name": "Serial number",
           "description": "Device serial number"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "EZVIZ HP7 options",
+        "description": "Enter the serial of the indoor monitor to expose a separate switch for its chime. Leave empty if you don't have an indoor monitor or don't want to manage it.",
+        "data": {
+          "monitor_serial": "Indoor monitor serial"
         }
       }
     }
