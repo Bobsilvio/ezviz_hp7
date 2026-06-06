@@ -91,8 +91,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Returns:
         True if unload was successful.
     """
+    # Stop the per-entry live stream relay (if any) before tearing down platforms.
+    try:
+        from .live_camera import async_unload_live_entities
+
+        await async_unload_live_entities(hass, entry)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Live camera teardown ignored: %s", exc)
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    
+
     if unload_ok:
         data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, {})
         api: Hp7Api | None = data.get("api")

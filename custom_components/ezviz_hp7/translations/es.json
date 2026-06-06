@@ -119,6 +119,14 @@
       "chime_sound_monitor": {
         "name": "Sonido Monitor Interior"
       }
+    },
+    "camera": {
+      "last_snapshot": {
+        "name": "Última Instantánea"
+      },
+      "live": {
+        "name": "En Vivo"
+      }
     }
   },
   "services": {

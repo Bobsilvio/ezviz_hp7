@@ -119,6 +119,14 @@
       "chime_sound_monitor": {
         "name": "Son du Moniteur Intérieur"
       }
+    },
+    "camera": {
+      "last_snapshot": {
+        "name": "Dernier Cliché"
+      },
+      "live": {
+        "name": "Direct"
+      }
     }
   },
   "services": {

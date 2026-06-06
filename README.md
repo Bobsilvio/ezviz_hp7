@@ -22,7 +22,7 @@ Don't forget to follow me on social media:
 Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** (and their close siblings). HP7 is the original target; CP7 shares the same cloud APIs and live-stream protocol, so it works through the same code path. The device model is auto-detected from the cloud (`deviceSubCategory` / `deviceType`) and displayed in the Home Assistant device card.
 Unlock door/gate remotely, enable/disable the monitor chime, view the last-alarm snapshot, and expose device sensors for automations and dashboards.
 
-- **Version:** 0.4.0
+- **Version:** 0.5.0
 - **Minimum Home Assistant:** 2025.9.0
 - **Languages:** Italian, English, Spanish, French (fallback English)
 
@@ -122,6 +122,22 @@ action:
 
 - Currently supports **one HP7 / CP7 device per account entry** (multi-device support planned — multiple devices can be added today by repeating the config-entry setup).
 - The chime switch reads back state via cloud polling — changes made from the EZVIZ app appear after the next poll cycle.
+- Two-way audio (talkback) is not implemented; the cloud VTM relay carries only the inbound microphone leg and isn't yet exposed as a Home Assistant audio track.
+
+---
+
+## 📺 Live video — native VTM cloud relay
+
+The HP7 / CP7 don't expose RTSP or ONVIF and they don't register on the Hik-Connect UDP P2P cloud (only server-grade Hikvision NVRs do). The official EZVIZ app streams these doorbells through the **VTM cloud relay**: a TCP `ysproto` session that delivers MPEG-PS (H.264 video + audio) over a regional EZVIZ server.
+
+A `camera.ezviz_hp7_<serial>_live` entity exposes that live stream. Under the hood the integration:
+
+1. Reuses the EZVIZ session already authenticated by the polling coordinator — no extra login, no risk of cascading account lockouts.
+2. Calls `pylocalapi.cloud_stream.open_cloud_stream` (vendored from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi)) to bootstrap the VTM stream URL, run the handshake / redirect chain and pull MPEG-PS payloads.
+3. Pumps those payloads through a local `ffmpeg -f mpeg -c:v copy -f mpegts` subprocess that exposes the stream on a `127.0.0.1` TCP port.
+4. The Home Assistant Stream component connects to that port, demuxes the MPEG-TS, and serves HLS / WebRTC to the frontend.
+
+A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic.
 
 ---
 

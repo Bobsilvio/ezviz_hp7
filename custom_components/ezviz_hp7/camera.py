@@ -44,6 +44,16 @@ async def async_setup_entry(
         [Hp7LastSnapshotCamera(hass, coordinator, serial, model)]
     )
 
+    # Live H.264 stream via the VTM cloud relay (Renier pylocalapi).
+    # Best-effort: failures here are logged but do not prevent the rest of
+    # the platform from coming up.
+    try:
+        from .live_camera import async_setup_live_entities
+
+        await async_setup_live_entities(hass, entry, async_add_entities)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("Live camera setup skipped: %s", exc)
+
 
 class Hp7LastSnapshotCamera(Camera, CoordinatorEntity):
     """Camera entity for latest EZVIZ device alarm snapshot.
