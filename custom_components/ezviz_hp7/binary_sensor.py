@@ -103,6 +103,44 @@ ALARM_MAP: list[tuple[list[str], str, str, BinarySensorDeviceClass | None, str]]
 # the unlock category and the underlying alarm name.
 HP7_UNLOCK_EVENT = "ezviz_hp7_unlock"
 
+
+def _extract_card_id(detail: Any) -> str | None:
+    """Best-effort hunt for a card identifier inside an EZVIZ alarm record.
+
+    The HP7 Pro EZVIZ payload for RFID unlocks tends to put the card number
+    in one of a handful of fields; firmware revisions move it around. Try
+    common names (and `relationInfo`, which is sometimes a JSON-encoded
+    string) and return the first non-empty match.
+    """
+    if not isinstance(detail, dict):
+        return None
+
+    candidates = (
+        "cardNo", "cardID", "cardId", "rfidCardNo", "rfidId",
+        "userNo", "tagId", "doorlockCardNo",
+    )
+    for key in candidates:
+        val = detail.get(key)
+        if isinstance(val, (str, int)) and str(val).strip() not in ("", "0"):
+            return str(val).strip()
+
+    # `relationInfo` / `recExtraInfo` are typically JSON strings.
+    for key in ("relationInfo", "recExtraInfo", "remark", "alarmExtInfo"):
+        raw = detail.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            import json as _json
+            parsed = _json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            for k in candidates:
+                v = parsed.get(k)
+                if isinstance(v, (str, int)) and str(v).strip() not in ("", "0"):
+                    return str(v).strip()
+    return None
+
 # Translation keys recognised as unlock categories.
 _UNLOCK_KEYS = {
     "unlock_lock",
@@ -324,15 +362,19 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
             # Fire HA event for unlock categories so automations can branch
             # on the kind of unlock without polling state.
             if self._attr_translation_key in _UNLOCK_KEYS and self.hass is not None:
-                self.hass.bus.async_fire(
-                    HP7_UNLOCK_EVENT,
-                    {
-                        "category": self._attr_translation_key,
-                        "alarm_name": current_alarm,
-                        "alarm_time": current_alarm_time,
-                        "serial": self._serial,
-                    },
-                )
+                detail = data.get("latest_alarm_detail") if isinstance(data, dict) else None
+                card_id = _extract_card_id(detail) if detail else None
+                payload: dict[str, Any] = {
+                    "category": self._attr_translation_key,
+                    "alarm_name": current_alarm,
+                    "alarm_time": current_alarm_time,
+                    "serial": self._serial,
+                }
+                if detail is not None:
+                    payload["details"] = detail
+                if card_id is not None:
+                    payload["card_id"] = card_id
+                self.hass.bus.async_fire(HP7_UNLOCK_EVENT, payload)
 
         self.async_write_ha_state()
 

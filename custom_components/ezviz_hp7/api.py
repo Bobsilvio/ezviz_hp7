@@ -422,6 +422,32 @@ class Hp7Api:
             _LOGGER.warning("EZVIZ HP7: set_camera_defence failed: %s", exc)
             return False
 
+    def get_latest_alarm_detail(self, serial: str) -> dict[str, Any] | None:
+        """Fetch the most recent detailed alarm record for ``serial``.
+
+        Used to recover information the basic `last_alarm_type_name` field
+        does not carry (e.g. which RFID card unlocked the door, face/palm
+        recognition metadata, EZVIZ message id for picture lookup).
+
+        Returns the raw first alarm dict, or None on error / no data.
+        """
+        self.ensure_client()
+        if not self._client:
+            return None
+        try:
+            payload = self._client.get_alarminfo(serial, limit=1)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("EZVIZ HP7: get_alarminfo failed: %s", exc)
+            return None
+
+        # Response shape: { "alarms": [ {...} ], "meta": {...}, "page": {...} }
+        # (key name observed as "alarms" or "alarmLogs" depending on firmware).
+        for key in ("alarms", "alarmLogs", "alarmList", "alarmInfos"):
+            value = payload.get(key)
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                return value[0]
+        return None
+
     def set_label_light(self, serial: str, enable: bool) -> bool:
         """Toggle the doorbell name/label LED (CHIME_INDICATOR_LIGHT switch).
 

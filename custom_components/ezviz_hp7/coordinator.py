@@ -70,15 +70,31 @@ class Hp7Coordinator(DataUpdateCoordinator):
         self.api = api
         self.serial = serial
         self.monitor_serial = monitor_serial
+        self._last_alarm_time: str | None = None
+        self._last_alarm_detail: dict[str, Any] | None = None
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest device status from API.
 
-        Called periodically to update all coordinator data.
-
-        Returns:
-            Device status dictionary with sensor values.
+        Called periodically to update all coordinator data. When the
+        ``last_alarm_time`` field changes between polls we also call the
+        EZVIZ alarminfo endpoint once to fetch the detailed alarm record
+        (RFID card id, picture id, etc.) and embed it under
+        ``latest_alarm_detail``.
         """
-        return await self.hass.async_add_executor_job(
+        data = await self.hass.async_add_executor_job(
             self.api.get_status, self.serial, self.monitor_serial
         )
+
+        alarm_time = data.get("last_alarm_time")
+        if alarm_time and alarm_time != self._last_alarm_time:
+            detail = await self.hass.async_add_executor_job(
+                self.api.get_latest_alarm_detail, self.serial
+            )
+            if detail:
+                self._last_alarm_detail = detail
+            self._last_alarm_time = alarm_time
+        if self._last_alarm_detail is not None:
+            data["latest_alarm_detail"] = self._last_alarm_detail
+
+        return data
