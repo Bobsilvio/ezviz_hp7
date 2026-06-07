@@ -29,7 +29,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities.append(EzvizHp7PrivacySwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7DefenceSwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7LabelLightSwitch(coordinator, api, serial, model))
-    entities.append(EzvizHp7ChimePirSwitch(coordinator, api, serial, model))
+    entities.append(EzvizHp7ChimePirSwitch(coordinator, api, serial, model=model))
 
     # Per-monitor switches (multi-monitor for HP7 bifamigliare).
     monitors: list[str] = []
