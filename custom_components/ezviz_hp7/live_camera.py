@@ -461,6 +461,60 @@ class Hp7LiveCamera(Camera):
             return None
         return self._relay.stream_url
 
+    async def async_camera_image(
+        self,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> bytes | None:
+        """Return a snapshot grabbed from the live stream.
+
+        The frontend tile / Lovelace previews ask for a still image even on
+        stream-only cameras; the base Camera class raises NotImplementedError
+        if we don't override this. Spawn a one-shot ffmpeg against the local
+        TCP relay (`-frames:v 1 -f image2`) to grab a single JPEG. The
+        active VTM session served by the relay is reused, so we don't open
+        a second cloud session just for a thumbnail.
+        """
+        if self._relay.port == 0:
+            return None
+        url = self._relay.stream_url
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-fflags",
+                "+nobuffer",
+                "-flags",
+                "low_delay",
+                "-i",
+                url,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "5",
+                "-f",
+                "image2",
+                "pipe:1",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7LiveCamera: ffmpeg snapshot spawn failed: %s", exc)
+            return None
+        try:
+            data, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            _LOGGER.debug("Hp7LiveCamera: snapshot ffmpeg timed out")
+            return None
+        return data or None
+
 
 async def async_setup_live_entities(
     hass: HomeAssistant,
