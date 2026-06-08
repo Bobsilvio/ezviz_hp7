@@ -1,28 +1,30 @@
-[![Sample](https://storage.ko-fi.com/cdn/generated/zfskfgqnf/2025-03-07_rest-7d81acd901abf101cbdf54443c38f6f0-dlmmonph.jpg)](https://ko-fi.com/silviosmart)
+<h1 align="center">Home Assistant Integration for EZVIZ HP7 / CP7 Intercom</h1>
 
-## Supportami / Support Me
+<p align="center">
+  <img src="https://storage.ko-fi.com/cdn/generated/zfskfgqnf/2025-03-07_rest-7d81acd901abf101cbdf54443c38f6f0-dlmmonph.jpg" width="220" alt="EZVIZ HP7 / CP7"/>
+</p>
 
-Se ti piace il mio lavoro e vuoi che continui nello sviluppo delle card, puoi offrirmi un caffè.\
-If you like my work and want me to continue developing the cards, you can buy me a coffee.
+<p align="center">
+  <a href="https://github.com/Bobsilvio/ezviz_hp7/releases"><img src="https://img.shields.io/github/v/release/Bobsilvio/ezviz_hp7?style=flat-square&color=blue" alt="release"/></a>
+  <a href="https://github.com/Bobsilvio/ezviz_hp7/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Bobsilvio/ezviz_hp7?style=flat-square" alt="license"/></a>
+  <a href="https://hacs.xyz/docs/faq/custom_repositories"><img src="https://img.shields.io/badge/HACS-Custom-orange?style=flat-square" alt="HACS"/></a>
+  <img src="https://img.shields.io/badge/Home%20Assistant-2025.9.0%2B-41bdf5?style=flat-square&logo=home-assistant" alt="HA"/>
+  <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square&logo=python&logoColor=white" alt="python"/>
+  <img src="https://img.shields.io/github/last-commit/Bobsilvio/ezviz_hp7?style=flat-square" alt="last commit"/>
+  <a href="https://github.com/Bobsilvio/ezviz_hp7/issues"><img src="https://img.shields.io/github/issues-closed/Bobsilvio/ezviz_hp7?style=flat-square&color=success" alt="closed issues"/></a>
+</p>
 
+<p align="center">
+  <strong>Live video (H.264 + AAC)</strong> • <strong>Door/gate unlock</strong> • <strong>Multi-monitor chime</strong> • <strong>Unlock events (RFID / face / palm / code / app)</strong> • <strong>2FA SMS login</strong>
+</p>
 
-[![PayPal](https://img.shields.io/badge/Donate-PayPal-%2300457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=Z6KY9V6BBZ4BN)
+---
 
-Non dimenticare di seguirmi sui social:\
-Don't forget to follow me on social media:
+Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** (and their close siblings — HP5, CP5, DP1, DP2). HP7 is the original target; CP7 shares the same cloud APIs and live-stream protocol, so it works through the same code path. The device model is auto-detected from the cloud (`deviceSubCategory` / `deviceType`) and shown in the Home Assistant device card.
 
-[![TikTok](https://img.shields.io/badge/Follow_TikTok-%23000000?style=for-the-badge&logo=tiktok&logoColor=white)](https://www.tiktok.com/@silviosmartalexa)
+Unlock door / gate remotely, watch the live stream, hear the visitor on the intercom audio, manage the chime sound and volume on both the doorbell and every indoor monitor, react to RFID / face / palm / code / app unlocks in automations.
 
-[![Instagram](https://img.shields.io/badge/Follow_Instagram-%23E1306C?style=for-the-badge&logo=instagram&logoColor=white)](https://www.instagram.com/silviosmartalexa)
-
-[![YouTube](https://img.shields.io/badge/Subscribe_YouTube-%23FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/@silviosmartalexa)
-
-# Home Assistant Integration for EZVIZ HP7 / CP7 Intercom
-
-Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** (and their close siblings). HP7 is the original target; CP7 shares the same cloud APIs and live-stream protocol, so it works through the same code path. The device model is auto-detected from the cloud (`deviceSubCategory` / `deviceType`) and displayed in the Home Assistant device card.
-Unlock door/gate remotely, enable/disable the monitor chime, view the last-alarm snapshot, and expose device sensors for automations and dashboards.
-
-- **Version:** 0.9.0
+- **Version:** 0.9.3
 - **Minimum Home Assistant:** 2025.9.0
 - **Languages:** Italian, English, Spanish, French (fallback English)
 
@@ -187,7 +189,20 @@ Personal Home Assistant use is permitted. Redistribution requires explicit autho
 
 ---
 
-## ☕ Support the project
+## ☕ Support the project / Supportami
 
-If you like this integration and want to support further development:
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/silviosmart)
+If you like this integration and want to support further development, you can buy me a coffee.
+Se il progetto ti è utile, puoi offrirmi un caffè:
+
+<p>
+  <a href="https://ko-fi.com/silviosmart"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Ko-fi"/></a>
+  <a href="https://www.paypal.com/donate/?hosted_button_id=Z6KY9V6BBZ4BN"><img src="https://img.shields.io/badge/Donate-PayPal-%2300457C?style=for-the-badge&logo=paypal&logoColor=white" alt="PayPal"/></a>
+</p>
+
+### 📲 Social
+
+<p>
+  <a href="https://www.tiktok.com/@silviosmartalexa"><img src="https://img.shields.io/badge/TikTok-%23000000?style=for-the-badge&logo=tiktok&logoColor=white" alt="TikTok"/></a>
+  <a href="https://www.instagram.com/silviosmartalexa"><img src="https://img.shields.io/badge/Instagram-%23E1306C?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram"/></a>
+  <a href="https://www.youtube.com/@silviosmartalexa"><img src="https://img.shields.io/badge/YouTube-%23FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"/></a>
+</p>
