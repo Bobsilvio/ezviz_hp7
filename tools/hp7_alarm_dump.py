@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components" / "ezviz_hp7"))
@@ -58,8 +59,69 @@ def parse_args() -> argparse.Namespace:
         default="92",
         help="unifiedmsg stype (default 92 = all alarms; try -1, 2701, 9904)",
     )
+    p.add_argument(
+        "--probe-cards",
+        action="store_true",
+        help="Probe likely card-list / face-list endpoints to hunt for the "
+             "field that maps an RFID card to a user-assigned name.",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
+
+
+def _probe_endpoints(c: Any, serial: str) -> None:
+    """Hit a list of likely card / user / face endpoints and dump the response.
+
+    Pure exploration: most will 404 or 6005 (auth required). We're looking for
+    a 200 with anything that resembles a card identifier mapped to a name.
+    """
+    import requests as _req  # noqa: WPS433
+
+    base = c._token.get("api_url") or "apiieu.ezvizlife.com"
+    if not base.startswith("http"):
+        base = "https://" + base
+    sess = c._session  # type: ignore[attr-defined]
+    candidates = [
+        # Card / RFID
+        f"/v3/userdevices/v1/devices/{serial}/cardManage/cards",
+        f"/v3/userdevices/v1/devices/{serial}/cards",
+        f"/v3/userdevices/v1/devices/{serial}/cardData/list",
+        f"/v3/devicemanage/cardData/get/{serial}",
+        f"/v3/devicemanage/v1/devices/{serial}/cards",
+        f"/api/v3/devicemanage/cardManage/cards/{serial}",
+        f"/v3/lockcards/{serial}/list",
+        f"/v3/lockcards/list?deviceSerial={serial}",
+        f"/v3/access/v1/cards/{serial}",
+        f"/v3/users/v1/{serial}/cards",
+        # Face / palm enrol lists (HP7 Pro)
+        f"/v3/userdevices/v1/devices/{serial}/faces",
+        f"/v3/userdevices/v1/devices/{serial}/palmvein",
+        f"/v3/devmanagement/v1/{serial}/users",
+        f"/v3/access/v1/users/{serial}",
+        # Tag / RFID alternates
+        f"/v3/access/v1/tags/{serial}",
+        f"/v3/userdevices/v1/devices/{serial}/tags",
+    ]
+    print()
+    print("=== probe ===")
+    for path in candidates:
+        url = base.rstrip("/") + path
+        try:
+            r = sess.get(url, timeout=10)
+        except _req.RequestException as exc:
+            print(f"  {path:60}  EXC {exc}")
+            continue
+        ctype = r.headers.get("content-type", "")
+        body = r.text or ""
+        snip = body[:300].replace("\n", " ")
+        flag = ""
+        for needle in ("card", "tag", "rfid", "name", "userName", "label"):
+            if needle.lower() in body.lower():
+                flag = f"  [HIT:{needle}]"
+                break
+        print(f"  {r.status_code} {path}{flag}")
+        if r.status_code == 200 and body:
+            print(f"      {snip!r:.300}")
 
 
 def main() -> int:
@@ -104,6 +166,12 @@ def main() -> int:
         print(json.dumps(msgs, indent=2, ensure_ascii=False))
     except Exception as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
+
+    if args.probe_cards:
+        try:
+            _probe_endpoints(c, args.serial)
+        except Exception as exc:
+            print(f"probe FAIL: {exc}", file=sys.stderr)
 
     try:
         c.logout()
