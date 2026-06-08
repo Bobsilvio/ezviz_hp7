@@ -72,6 +72,11 @@ class Hp7Coordinator(DataUpdateCoordinator):
         self.monitor_serial = monitor_serial
         self._last_alarm_time: str | None = None
         self._last_alarm_detail: dict[str, Any] | None = None
+        # Key list cache (RFID cards / face / palm enrolments) — refresh
+        # every 5 min to keep KeyMgr API load minimal while still picking up
+        # new enrolments / renames within a polling cycle or two.
+        self._key_list: list[dict[str, Any]] | None = None
+        self._key_list_age: int = 10**6  # force first fetch
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest device status from API.
@@ -96,5 +101,18 @@ class Hp7Coordinator(DataUpdateCoordinator):
             self._last_alarm_time = alarm_time
         if self._last_alarm_detail is not None:
             data["latest_alarm_detail"] = self._last_alarm_detail
+
+        # Refresh key list every ~5 min (with UPDATE_INTERVAL_SEC = 15 that's
+        # one fetch every 20 polling cycles).
+        self._key_list_age += 1
+        if self._key_list_age >= 20 or self._key_list is None:
+            keys = await self.hass.async_add_executor_job(
+                self.api.get_key_list, self.serial
+            )
+            if keys is not None:
+                self._key_list = keys
+            self._key_list_age = 0
+        if self._key_list is not None:
+            data["keys"] = self._key_list
 
         return data

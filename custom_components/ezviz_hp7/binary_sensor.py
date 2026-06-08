@@ -104,6 +104,31 @@ ALARM_MAP: list[tuple[list[str], str, str, BinarySensorDeviceClass | None, str]]
 HP7_UNLOCK_EVENT = "ezviz_hp7_unlock"
 
 
+def _resolve_card_name(
+    keys: list[dict[str, Any]], card_id: str | None
+) -> str | None:
+    """Best-effort: map card_id to the user-assigned keyName.
+
+    If card_id matches a keyID in the list, return the matching keyName.
+    Otherwise, if exactly one key is enabled, assume that one (works for
+    households with a single RFID card).
+    """
+    enabled = [
+        k for k in keys
+        if isinstance(k, dict) and k.get("enabled") in (1, "1", True)
+    ]
+    if card_id is not None:
+        for k in keys:
+            kid = k.get("keyID")
+            if str(kid) == str(card_id) and isinstance(k.get("keyName"), str):
+                return k["keyName"]
+    if len(enabled) == 1:
+        name = enabled[0].get("keyName")
+        if isinstance(name, str) and name.strip():
+            return name
+    return None
+
+
 def _extract_card_id(detail: Any) -> str | None:
     """Best-effort hunt for a card identifier inside an EZVIZ alarm record.
 
@@ -363,6 +388,7 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
             # on the kind of unlock without polling state.
             if self._attr_translation_key in _UNLOCK_KEYS and self.hass is not None:
                 detail = data.get("latest_alarm_detail") if isinstance(data, dict) else None
+                keys = data.get("keys") if isinstance(data, dict) else None
                 card_id = _extract_card_id(detail) if detail else None
                 payload: dict[str, Any] = {
                     "category": self._attr_translation_key,
@@ -374,6 +400,14 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
                     payload["details"] = detail
                 if card_id is not None:
                     payload["card_id"] = card_id
+                if isinstance(keys, list) and keys:
+                    payload["keys"] = keys
+                    # Heuristic: if card_id is known and matches a keyID
+                    # in the list, surface card_name. Otherwise if there
+                    # is exactly one enabled key, assume that one.
+                    card_name = _resolve_card_name(keys, card_id)
+                    if card_name:
+                        payload["card_name"] = card_name
                 self.hass.bus.async_fire(HP7_UNLOCK_EVENT, payload)
 
         self.async_write_ha_state()

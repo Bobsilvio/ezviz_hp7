@@ -422,6 +422,39 @@ class Hp7Api:
             _LOGGER.warning("EZVIZ HP7: set_camera_defence failed: %s", exc)
             return False
 
+    def get_key_list(self, serial: str) -> list[dict[str, Any]] | None:
+        """Fetch the list of RFID cards / face / palm keys enrolled on the device.
+
+        Endpoint discovered via app mitmproxy capture (issue #32 follow-up):
+            GET /v3/iot-feature/feature/{serial}/global/0/KeyMgr/CardKeyInfo
+        Response shape:
+            {"data": {"KeyInfo": [
+                {"keyID":1,"keyName":"Katia","keyType":3,"authorityType":1,
+                 "enabled":1,"startTime":1755043200,"endTime":1755302400}
+            ], "totalKeyNum":1}}
+        """
+        self.ensure_client()
+        if not self._client:
+            return None
+        url = (
+            f"https://{self._url}/v3/iot-feature/feature/{serial}"
+            f"/global/0/KeyMgr/CardKeyInfo"
+        )
+        try:
+            resp = self._client._session.get(url, timeout=15)
+            resp.raise_for_status()
+            payload = resp.json()
+        except (RequestException, ValueError) as exc:
+            _LOGGER.debug("EZVIZ HP7: get_key_list failed: %s", exc)
+            return None
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data") or {}
+        keys = data.get("KeyInfo") or []
+        if not isinstance(keys, list):
+            return None
+        return [k for k in keys if isinstance(k, dict)]
+
     def get_latest_alarm_detail(self, serial: str) -> dict[str, Any] | None:
         """Fetch the most recent detailed alarm record for ``serial``.
 
