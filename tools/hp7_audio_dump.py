@@ -14,7 +14,7 @@ Usage:
         --account YOUR_EZVIZ_EMAIL \
         --password YOUR_PASSWORD \
         --region eu \
-        --serial BE7062577-BE6963574 \
+        --serial BEXXXXXXXX-BEXXXXXXXX \
         --seconds 15 \
         --output /tmp/hp7_audio.bin
 

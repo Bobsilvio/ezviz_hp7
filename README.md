@@ -133,7 +133,7 @@ trigger:
 action:
   - service: ezviz_hp7.unlock_gate
     data:
-      serial: BE7062577-BE6963574
+      serial: BEXXXXXXXX-BEXXXXXXXX
 ```
 
 ---

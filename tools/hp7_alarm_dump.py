@@ -12,7 +12,7 @@ Usage:
         --account YOUR_EZVIZ_EMAIL \
         --password YOUR_PASSWORD \
         --region eu \
-        --serial BE7062577-BE6963574 \
+        --serial BEXXXXXXXX-BEXXXXXXXX \
         --limit 5
 
 Credentials can come from EZVIZ_ACCOUNT / EZVIZ_PASSWORD / EZVIZ_REGION

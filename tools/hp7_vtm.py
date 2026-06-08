@@ -19,7 +19,7 @@ VLC / ffplay can attach:
         --account YOUR_EZVIZ_EMAIL \
         --password YOUR_PASSWORD \
         --region eu \
-        --serial BE7062577-BE6963574
+        --serial BEXXXXXXXX-BEXXXXXXXX
 
 Then open VLC -> File -> Open Network Stream -> tcp://127.0.0.1:<port>.
 
