@@ -1,0 +1,32 @@
+name: Release Drafter
+
+# Builds / refreshes the draft GitHub Release every time a commit lands on
+# main and every time a PR opens or merges. The draft is updated in place;
+# bump the integration manifest version, push the tag, then click "Publish"
+# on the draft when ready.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update_release_draft:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

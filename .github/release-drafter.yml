@@ -1,0 +1,77 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+version-resolver:
+  major:
+    labels:
+      - 'breaking'
+  minor:
+    labels:
+      - 'feature'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'fix'
+      - 'bug'
+      - 'chore'
+      - 'docs'
+  default: patch
+categories:
+  - title: '✨ Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+    rules:
+      - title: '*'
+        labels: []
+        pattern: '^feat(\(.+\))?:'
+  - title: '🐛 Bug fixes'
+    labels:
+      - 'fix'
+      - 'bug'
+    rules:
+      - title: '*'
+        labels: []
+        pattern: '^fix(\(.+\))?:'
+  - title: '♻️ Changed'
+    labels:
+      - 'chore'
+      - 'refactor'
+    rules:
+      - title: '*'
+        labels: []
+        pattern: '^(chore|refactor|perf)(\(.+\))?:'
+  - title: '📚 Docs'
+    labels:
+      - 'docs'
+    rules:
+      - title: '*'
+        labels: []
+        pattern: '^docs(\(.+\))?:'
+  - title: '🧰 Tools / CI'
+    rules:
+      - title: '*'
+        labels: []
+        pattern: '^(ci|build|tools)(\(.+\))?:'
+exclude-labels:
+  - 'skip-changelog'
+template: |
+  ## What's changed
+
+  $CHANGES
+
+  **Full changelog:** https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+autolabeler:
+  - label: 'feature'
+    title:
+      - '/^feat(\(.+\))?:/i'
+  - label: 'fix'
+    title:
+      - '/^fix(\(.+\))?:/i'
+  - label: 'chore'
+    title:
+      - '/^chore(\(.+\))?:/i'
+      - '/^refactor(\(.+\))?:/i'
+      - '/^perf(\(.+\))?:/i'
+  - label: 'docs'
+    title:
+      - '/^docs(\(.+\))?:/i'
