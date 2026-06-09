@@ -326,19 +326,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                 },
             )
 
-        # Default suggestion: split the camera serial on '-'. EZVIZ HP7
-        # composite serials follow the pattern "<monitor>-<camera>", so the
-        # part before the dash is almost always the indoor monitor serial.
-        # For HP7 bifamigliare (1 camera + 2 monitors) the user can list
-        # both monitor serials comma-separated.
-        camera_serial = self.config_entry.data.get(CONF_SERIAL, "")
-        guess_monitor = ""
-        if isinstance(camera_serial, str) and "-" in camera_serial:
-            guess_monitor = camera_serial.split("-", 1)[0]
-
+        # No auto-suggest. CP5/CP7 (single-piece doorbells) report a
+        # composite serial too — `BE9259083-BE9140879` — but the part before
+        # the dash is NOT a real monitor; querying ChimeMusic on it returns
+        # 403 and spawns a phantom device in HA. Users with HP7 / HP7
+        # bifamigliare can type the real monitor serial(s) here manually.
         current = self.config_entry.options.get(
             CONF_MONITOR_SERIAL,
-            self.config_entry.data.get(CONF_MONITOR_SERIAL, guess_monitor),
+            self.config_entry.data.get(CONF_MONITOR_SERIAL, ""),
         )
         if isinstance(current, (list, tuple)):
             current = ", ".join(str(s) for s in current if s)
