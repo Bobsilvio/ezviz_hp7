@@ -348,12 +348,16 @@ class Hp7StreamRelay:
                 # AudioSpecificConfig extradata (the inbound ADTS strips it).
                 "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                 "-max_interleave_delta", "0",
-                # Inject SPS/PPS in front of every IDR so HA's Stream worker
-                # can probe the codec mid-stream (otherwise it bails out with
-                # "Immediate exit requested" on devices where the inbound
-                # stream skips them, e.g. CP5 in issue #33).
-                "-bsf:v", "dump_extra",
-                "-mpegts_flags", "+resend_headers+initial_discontinuity",
+                # Re-emit PAT/PMT every second so a mid-stream connect (HA
+                # Stream worker probing after ffmpeg started producing) can
+                # still pick up the codec parameters. Earlier 0.9.5 also
+                # carried -bsf:v dump_extra + initial_discontinuity, but
+                # those broke HP7 (Annex-B input had no extradata to dump,
+                # and the discontinuity bit on the very first TS packet
+                # caused PyAV to reject the stream with "Invalid data found
+                # when processing input"). Keeping only the PAT/PMT refresh
+                # — which is sufficient on its own for CP5.
+                "-mpegts_flags", "+resend_headers",
                 "-pat_period", "1",
                 "-sdt_period", "1",
                 "-f", "mpegts", "pipe:1",
