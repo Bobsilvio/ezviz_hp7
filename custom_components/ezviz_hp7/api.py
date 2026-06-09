@@ -51,6 +51,12 @@ class Hp7Api:
         self._url = REGION_URLS.get(region, REGION_URLS["eu"])
         self.supports_door = True
         self.supports_gate = True
+        # Serials for which EZVIZ told us "device does not exist". We
+        # cache them in-memory for the session so we stop hammering the
+        # ChimeMusic endpoint on every 30s coordinator tick (#33 — old
+        # auto-suggested phantom monitor serials still sit in entry
+        # options for users upgrading from <=0.10.4).
+        self._chime_dead_serials: set[str] = set()
 
 
     @property
@@ -256,6 +262,8 @@ class Hp7Api:
         self.ensure_client()
         if not self._client:
             return None
+        if serial in self._chime_dead_serials:
+            return None
         try:
             result = self._client.get_dev_config(serial, 1, "ChimeMusic")
         except Exception as exc:  # noqa: BLE001
@@ -264,6 +272,22 @@ class Hp7Api:
                 serial,
                 exc,
             )
+            # Heuristic: cache "not found" answers for the whole session
+            # so we don't re-issue the same losing request every poll.
+            text = str(exc).lower()
+            if (
+                "2000" in text
+                or "not exist" in text
+                or "不存在" in text
+                or "403" in text
+                or "forbidden" in text
+            ):
+                self._chime_dead_serials.add(serial)
+                _LOGGER.info(
+                    "EZVIZ HP7: caching %s as unreachable for chime config "
+                    "(will skip until restart)",
+                    serial,
+                )
             return None
         value = result.get("valueInfo") or result.get("value")
         if isinstance(value, str):

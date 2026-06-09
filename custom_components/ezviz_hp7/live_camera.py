@@ -440,9 +440,25 @@ class Hp7StreamRelay:
                             )
                             next_a_log = a_bytes + 32 * 1024
         except Exception as exc:
-            _LOGGER.warning(
-                "Hp7StreamRelay: broadcast reader stopped: %s", exc
-            )
+            # EBADF here is the expected race when the shared VTM session
+            # is torn down by another thread (idle timeout or stop()) while
+            # the reader is still parked in recv(). Demote to debug; only
+            # surface unexpected exceptions at WARNING.
+            errno_val = getattr(exc, "errno", None)
+            if (
+                self._shared_stop.is_set()
+                or errno_val == 9  # EBADF
+                or "Bad file descriptor" in str(exc)
+            ):
+                _LOGGER.debug(
+                    "Hp7StreamRelay: broadcast reader stopped (expected "
+                    "teardown): %s",
+                    exc,
+                )
+            else:
+                _LOGGER.warning(
+                    "Hp7StreamRelay: broadcast reader stopped: %s", exc
+                )
         finally:
             for q in list(self._sub_v_qs) + list(self._sub_a_qs):
                 try:
