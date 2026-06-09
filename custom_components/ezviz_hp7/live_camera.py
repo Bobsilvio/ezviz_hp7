@@ -392,6 +392,8 @@ class Hp7StreamRelay:
         """Read VTM payloads -> PesParser -> fan out to per-client queues."""
         parser = PesParser()
         v_bytes = a_bytes = 0
+        next_v_log = 256 * 1024
+        next_a_log = 32 * 1024
         try:
             for body in self._shared_vtm.iter_payloads():
                 if self._shared_stop.is_set():
@@ -408,6 +410,14 @@ class Hp7StreamRelay:
                                 q.put_nowait(payload)
                             except queue.Full:
                                 pass
+                        if v_bytes >= next_v_log:
+                            _LOGGER.info(
+                                "Hp7StreamRelay: broadcast video progress %d B "
+                                "subs=%d",
+                                v_bytes,
+                                len(self._sub_v_qs),
+                            )
+                            next_v_log = v_bytes + 256 * 1024
                     elif stream_id == AUDIO_STREAM_ID:
                         a_bytes += len(payload)
                         for q in list(self._sub_a_qs):
@@ -415,8 +425,16 @@ class Hp7StreamRelay:
                                 q.put_nowait(payload)
                             except queue.Full:
                                 pass
+                        if a_bytes >= next_a_log:
+                            _LOGGER.info(
+                                "Hp7StreamRelay: broadcast audio progress %d B "
+                                "subs=%d",
+                                a_bytes,
+                                len(self._sub_a_qs),
+                            )
+                            next_a_log = a_bytes + 32 * 1024
         except Exception as exc:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 "Hp7StreamRelay: broadcast reader stopped: %s", exc
             )
         finally:
@@ -425,9 +443,10 @@ class Hp7StreamRelay:
                     q.put_nowait(None)
                 except queue.Full:
                     pass
-            _LOGGER.debug(
-                "Hp7StreamRelay: broadcast done video=%d B audio=%d B",
-                v_bytes, a_bytes,
+            _LOGGER.info(
+                "Hp7StreamRelay: broadcast done video=%d B audio=%d B "
+                "resync_drops=%d",
+                v_bytes, a_bytes, parser.resync_drops,
             )
 
     def _required_cooldown(self) -> float:
@@ -536,8 +555,24 @@ class Hp7StreamRelay:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
+            # Drain ffmpeg stderr to the logger so 0.9.x's silent-failure
+            # mode (#33) becomes visible. One line per ffmpeg message.
+            if proc.stderr is not None:
+                async def _drain_ff_err(stream: asyncio.StreamReader) -> None:
+                    try:
+                        while True:
+                            line = await stream.readline()
+                            if not line:
+                                return
+                            _LOGGER.debug(
+                                "Hp7StreamRelay: ffmpeg | %s",
+                                line.decode(errors="replace").rstrip(),
+                            )
+                    except Exception:
+                        return
+                asyncio.create_task(_drain_ff_err(proc.stderr))
 
             # Reader is the broadcast (shared VTM); only senders are per-client.
             v_sender_t = threading.Thread(
