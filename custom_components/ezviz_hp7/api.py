@@ -246,14 +246,24 @@ class Hp7Api:
     }
 
     def _get_chime_config(self, serial: str) -> dict[str, Any] | None:
-        """Fetch full ChimeMusic config dict, or None on error."""
+        """Fetch full ChimeMusic config dict, or None on error.
+
+        Catches every exception type the pylocalapi raises (its custom
+        HTTPError isn't a RequestException subclass — a 403 on a
+        non-monitor serial used to escape and tank the whole coordinator
+        update, see #33 Sergio CP5).
+        """
         self.ensure_client()
         if not self._client:
             return None
         try:
             result = self._client.get_dev_config(serial, 1, "ChimeMusic")
-        except (KeyError, AttributeError, ValueError, RequestException) as exc:
-            _LOGGER.warning("EZVIZ HP7: get_dev_config(ChimeMusic) failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "EZVIZ HP7: get_dev_config(ChimeMusic, %s) failed: %s",
+                serial,
+                exc,
+            )
             return None
         value = result.get("valueInfo") or result.get("value")
         if isinstance(value, str):
@@ -526,7 +536,9 @@ class Hp7Api:
         try:
             info = self._client.get_device_infos(serial) or {}
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("EZVIZ HP7: extra states fetch failed: %s", exc)
+            _LOGGER.debug(
+                "EZVIZ HP7: extra states fetch failed for %s: %s", serial, exc
+            )
             return out
 
         nodisturb = info.get("NODISTURB") or {}
