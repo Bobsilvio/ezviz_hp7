@@ -205,6 +205,7 @@ class Hp7StreamRelay:
         channel: int = 1,
         ffmpeg_path: str = "ffmpeg",
         listen_port: int = 0,
+        aggressive_mpegts: bool = False,
     ) -> None:
         self._api = api
         self._serial = serial
@@ -213,6 +214,10 @@ class Hp7StreamRelay:
         # Requested fixed port (0 = pick a free one). External consumers
         # like go2rtc need a stable URL; OptionsFlow exposes this.
         self._listen_port = int(listen_port) if listen_port else 0
+        # Opt-in toggle to re-emit SPS/PPS in front of every IDR. Helps
+        # firmwares that emit them only at the first IDR (CP5, some HP7
+        # builds — #33); breaks the firmwares that already inline them.
+        self._aggressive_mpegts = bool(aggressive_mpegts)
         self._server: Optional[asyncio.AbstractServer] = None
         self._port: int = 0
         self._last_attempt: float = 0.0
@@ -537,15 +542,17 @@ class Hp7StreamRelay:
                 # AudioSpecificConfig extradata (the inbound ADTS strips it).
                 "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                 "-max_interleave_delta", "0",
-                # Re-emit PAT/PMT every second so a mid-stream connect (HA
-                # Stream worker probing after ffmpeg started producing) can
-                # still pick up the codec parameters. Earlier 0.9.5 also
-                # carried -bsf:v dump_extra + initial_discontinuity, but
-                # those broke HP7 (Annex-B input had no extradata to dump,
-                # and the discontinuity bit on the very first TS packet
-                # caused PyAV to reject the stream with "Invalid data found
-                # when processing input"). Keeping only the PAT/PMT refresh
-                # — which is sufficient on its own for CP5.
+            ]
+            # Default safe path (works for Bobsilvio's HP7): only refresh
+            # PAT/PMT + SDT every second so a mid-stream connect can still
+            # discover the codec. Opt-in "aggressive_mpegts" additionally
+            # re-prepends SPS/PPS in front of every IDR via -bsf:v
+            # dump_extra, which is what CP5 and andresako's HP7 firmware
+            # appear to need — it breaks Bobsilvio's HP7 because his
+            # firmware already inlines them.
+            if self._aggressive_mpegts:
+                cmd += ["-bsf:v", "dump_extra"]
+            cmd += [
                 "-mpegts_flags", "+resend_headers",
                 "-pat_period", "1",
                 "-sdt_period", "1",
@@ -745,8 +752,14 @@ async def async_setup_live_entities(
     api: "Hp7Api" = data["api"]
     relay_port: int = int(data.get("relay_port") or 0)
 
+    aggressive_mpegts = bool(data.get("aggressive_mpegts", False))
+
     relay = Hp7StreamRelay(
-        api=api, serial=serial, channel=1, listen_port=relay_port
+        api=api,
+        serial=serial,
+        channel=1,
+        listen_port=relay_port,
+        aggressive_mpegts=aggressive_mpegts,
     )
     await relay.start()
     data["live_relay"] = relay

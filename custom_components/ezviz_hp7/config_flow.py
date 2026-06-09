@@ -16,6 +16,7 @@ from .const import (
     CONF_SERIAL,
     CONF_MONITOR_SERIAL,
     CONF_RELAY_PORT,
+    CONF_AGGRESSIVE_MPEGTS,
 )
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
 
@@ -315,11 +316,13 @@ class OptionsFlow(config_entries.OptionsFlow):
                 relay_port = 0
             if relay_port < 0 or relay_port > 65535:
                 relay_port = 0
+            aggressive = bool(user_input.get(CONF_AGGRESSIVE_MPEGTS, False))
             return self.async_create_entry(
                 title="",
                 data={
                     CONF_MONITOR_SERIAL: monitor,
                     CONF_RELAY_PORT: relay_port,
+                    CONF_AGGRESSIVE_MPEGTS: aggressive,
                 },
             )
 
@@ -349,12 +352,22 @@ class OptionsFlow(config_entries.OptionsFlow):
         except (TypeError, ValueError):
             current_port_int = 0
 
+        current_aggressive = bool(
+            self.config_entry.options.get(
+                CONF_AGGRESSIVE_MPEGTS,
+                self.config_entry.data.get(CONF_AGGRESSIVE_MPEGTS, False),
+            )
+        )
+
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
                 vol.Optional(
                     CONF_RELAY_PORT, default=current_port_int
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=65535)),
+                vol.Optional(
+                    CONF_AGGRESSIVE_MPEGTS, default=current_aggressive
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

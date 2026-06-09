@@ -219,7 +219,8 @@
         "description": "Enter the indoor monitor serial (or several serials separated by commas for the HP7 two-family setup) to expose a dedicated switch per monitor. Empty = no monitor.",
         "data": {
           "monitor_serial": "Indoor monitor serial",
-          "relay_port": "Fixed TCP port for the live relay (0 = random, suggested 8554 for go2rtc / mediamtx)"
+          "relay_port": "Fixed TCP port for the live relay (0 = random, suggested 8554 for go2rtc / mediamtx)",
+          "aggressive_mpegts": "Aggressive MPEG-TS compatibility (enable if you see 'Immediate exit requested' in logs; safe to leave OFF by default)"
         }
       }
     }

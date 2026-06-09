@@ -9,6 +9,12 @@ CONF_MONITOR_SERIAL = "monitor_serial"
 # tools like go2rtc, mediamtx or Frigate can keep a stable URL across HA
 # restarts.
 CONF_RELAY_PORT = "relay_port"
+# Inject SPS/PPS in front of every IDR. Some firmwares only emit them on
+# the first keyframe and HA's Stream worker rejects mid-stream connect with
+# "Immediate exit requested". This was on by default in 0.9.5 but broke
+# Bobsilvio's HP7 (#33) because his firmware already inlines SPS/PPS and
+# dump_extra duplicated them. Make it opt-in so each user can pick.
+CONF_AGGRESSIVE_MPEGTS = "aggressive_mpegts"
 
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]

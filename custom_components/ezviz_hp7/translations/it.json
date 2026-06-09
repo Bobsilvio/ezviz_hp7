@@ -219,7 +219,8 @@
         "description": "Inserisci il serial del monitor interno (o più serial separati da virgola per HP7 bifamigliare) per esporre uno switch dedicato per ogni monitor. Vuoto = nessun monitor.",
         "data": {
           "monitor_serial": "Serial monitor interno",
-          "relay_port": "Porta TCP fissa relay (0 = casuale, suggerito 8554 per go2rtc/mediamtx)"
+          "relay_port": "Porta TCP fissa relay (0 = casuale, suggerito 8554 per go2rtc/mediamtx)",
+          "aggressive_mpegts": "Compatibilità MPEG-TS aggressiva (abilita se vedi 'Immediate exit requested' nei log; sicuro lasciarlo OFF di default)"
         }
       }
     }

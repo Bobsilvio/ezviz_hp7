@@ -219,7 +219,8 @@
         "description": "Introduce el serial del monitor interior (o varios serials separados por comas para HP7 bifamiliar) para exponer un interruptor por cada monitor. Vacío = sin monitor.",
         "data": {
           "monitor_serial": "Serial del monitor interior",
-          "relay_port": "Puerto TCP fijo del relay (0 = aleatorio, recomendado 8554 para go2rtc / mediamtx)"
+          "relay_port": "Puerto TCP fijo del relay (0 = aleatorio, recomendado 8554 para go2rtc / mediamtx)",
+          "aggressive_mpegts": "Compatibilidad MPEG-TS agresiva (activa si ves 'Immediate exit requested' en los logs; seguro dejarlo OFF por defecto)"
         }
       }
     }

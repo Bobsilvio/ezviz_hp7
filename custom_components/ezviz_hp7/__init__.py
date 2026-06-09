@@ -8,7 +8,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN, PLATFORMS, CONF_MONITOR_SERIAL, CONF_RELAY_PORT
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    CONF_MONITOR_SERIAL,
+    CONF_RELAY_PORT,
+    CONF_AGGRESSIVE_MPEGTS,
+)
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
 from .device_info import DEFAULT_MODEL, detect_model
@@ -64,6 +70,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         relay_port = 0
     if relay_port < 0 or relay_port > 65535:
         relay_port = 0
+    aggressive_mpegts = bool(
+        entry.options.get(
+            CONF_AGGRESSIVE_MPEGTS,
+            entry.data.get(CONF_AGGRESSIVE_MPEGTS, False),
+        )
+    )
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -96,6 +108,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "monitor_serial": monitor_serial,
         "model": model,
         "relay_port": relay_port,
+        "aggressive_mpegts": aggressive_mpegts,
         "coordinator": coordinator,
     }
 
