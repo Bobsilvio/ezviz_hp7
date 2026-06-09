@@ -384,6 +384,33 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
                 current_alarm,
                 self._serial,
             )
+            # Pre-warm the live stream when something interesting happens at
+            # the door — covers the canonical "ring → open the dashboard"
+            # workflow with a sub-second first frame instead of paying the
+            # cold VTM handshake.
+            if (
+                self._attr_translation_key in ("doorbell_ringing",)
+                or self._attr_translation_key in _UNLOCK_KEYS
+            ) and self.hass is not None:
+                relay = (
+                    self.hass.data.get(DOMAIN, {})
+                    .get(self._entry_id_for_relay(), {})
+                    .get("live_relay")
+                    if hasattr(self, "_entry_id_for_relay")
+                    else None
+                )
+                # Simpler: scan all entries for one carrying our serial.
+                if relay is None:
+                    for data in (self.hass.data.get(DOMAIN, {}) or {}).values():
+                        if (
+                            isinstance(data, dict)
+                            and data.get("serial") == self._serial
+                            and data.get("live_relay") is not None
+                        ):
+                            relay = data["live_relay"]
+                            break
+                if relay is not None:
+                    self.hass.async_create_task(relay.prewarm())
             # Fire HA event for unlock categories so automations can branch
             # on the kind of unlock without polling state.
             if self._attr_translation_key in _UNLOCK_KEYS and self.hass is not None:

@@ -78,6 +78,13 @@ LOCKOUT_BACKOFF = 600.0
 
 INPUT_ACCEPT_TIMEOUT = 20.0
 
+# Pre-warm: how long a shared VTM session stays alive after the last HA
+# Stream client disconnected before we tear it down. Long enough that the
+# typical "ring -> open dashboard" workflow finds an already-running session
+# (sub-second first frame), short enough that we don't leave a cloud session
+# open all day after a stray motion event.
+PREWARM_IDLE_TIMEOUT = 120.0
+
 
 def _free_local_port() -> int:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
@@ -208,6 +215,16 @@ class Hp7StreamRelay:
         self._last_error: Optional[str] = None
         self._consecutive_failures: int = 0
         self._connect_lock = asyncio.Lock()
+        # Shared (pre-warmed) VTM session + broadcast bookkeeping.
+        self._shared_lock = asyncio.Lock()
+        self._shared_vtm: Any = None
+        self._shared_stop = threading.Event()
+        self._shared_reader: Optional[threading.Thread] = None
+        # Per-subscriber queues populated by the shared reader.
+        self._sub_v_qs: List["queue.Queue[Optional[bytes]]"] = []
+        self._sub_a_qs: List["queue.Queue[Optional[bytes]]"] = []
+        self._idle_handle: Optional[asyncio.TimerHandle] = None
+        self._active_clients: int = 0
 
     @property
     def port(self) -> int:
@@ -240,6 +257,158 @@ class Hp7StreamRelay:
             pass
         self._server = None
         self._port = 0
+        await self._shutdown_shared()
+
+    # ------------------------------------------------------------------
+    # Shared VTM pre-warm
+    # ------------------------------------------------------------------
+
+    async def prewarm(self) -> None:
+        """Open (or extend) a shared VTM session that future HA Stream
+        clients can reuse instead of paying the cloud handshake cost.
+
+        Safe to call repeatedly: if a shared session is already active the
+        idle teardown timer is just reset.
+        """
+        loop = asyncio.get_event_loop()
+        async with self._shared_lock:
+            if self._shared_vtm is not None:
+                self._arm_idle_timer()
+                _LOGGER.debug(
+                    "Hp7StreamRelay: prewarm extended (serial=%s)", self._serial
+                )
+                return
+            # Rate-limit shares the relay's circuit-breaker.
+            wait = self._seconds_until_next_attempt()
+            if wait > 0:
+                _LOGGER.debug(
+                    "Hp7StreamRelay: prewarm skipped — rate-limited (%.0fs)",
+                    wait,
+                )
+                return
+            self._last_attempt = loop.time()
+            try:
+                await loop.run_in_executor(None, self._api.ensure_client)
+                ezviz_client = self._api._client
+                if ezviz_client is None:
+                    raise RuntimeError(
+                        "EzvizClient unavailable after ensure_client()"
+                    )
+                vtm = await loop.run_in_executor(
+                    None,
+                    lambda: open_cloud_stream(
+                        ezviz_client, self._serial, channel=self._channel
+                    ),
+                )
+                info = await loop.run_in_executor(None, vtm.start)
+                self._consecutive_failures = 0
+                self._last_error = None
+                _LOGGER.info(
+                    "Hp7StreamRelay: pre-warm VTM up (serial=%s ssn=%s)",
+                    self._serial,
+                    getattr(info, "streamssn", "?"),
+                )
+            except Exception as exc:
+                self._consecutive_failures += 1
+                self._last_error = str(exc)
+                _LOGGER.warning(
+                    "Hp7StreamRelay: prewarm failed (%d/%d): %s",
+                    self._consecutive_failures, LOCKOUT_THRESHOLD, exc,
+                )
+                return
+            self._shared_vtm = vtm
+            self._shared_stop = threading.Event()
+            self._shared_reader = threading.Thread(
+                target=self._broadcast_reader,
+                name=f"hp7-vtm-broadcast-{self._serial}",
+                daemon=True,
+            )
+            self._shared_reader.start()
+            self._arm_idle_timer()
+
+    def _arm_idle_timer(self) -> None:
+        if self._idle_handle is not None:
+            self._idle_handle.cancel()
+            self._idle_handle = None
+        if self._active_clients > 0:
+            # Don't tear down while clients are connected — they cover us.
+            return
+        loop = asyncio.get_event_loop()
+        self._idle_handle = loop.call_later(
+            PREWARM_IDLE_TIMEOUT, self._idle_expired
+        )
+
+    def _idle_expired(self) -> None:
+        self._idle_handle = None
+        if self._active_clients > 0:
+            return
+        asyncio.create_task(self._shutdown_shared())
+
+    async def _shutdown_shared(self) -> None:
+        async with self._shared_lock:
+            vtm = self._shared_vtm
+            self._shared_vtm = None
+            self._shared_stop.set()
+            for q in list(self._sub_v_qs) + list(self._sub_a_qs):
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    pass
+            if self._idle_handle is not None:
+                self._idle_handle.cancel()
+                self._idle_handle = None
+        if vtm is not None:
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(None, vtm.close)
+            except Exception:
+                pass
+        if self._shared_reader is not None:
+            self._shared_reader.join(timeout=2.0)
+            self._shared_reader = None
+        _LOGGER.debug("Hp7StreamRelay: shared VTM torn down (serial=%s)", self._serial)
+
+    def _broadcast_reader(self) -> None:
+        """Read VTM payloads -> PesParser -> fan out to per-client queues."""
+        parser = PesParser()
+        v_bytes = a_bytes = 0
+        try:
+            for body in self._shared_vtm.iter_payloads():
+                if self._shared_stop.is_set():
+                    break
+                if not body:
+                    continue
+                for stream_id, payload in parser.feed(body):
+                    if not payload:
+                        continue
+                    if stream_id == VIDEO_STREAM_ID:
+                        v_bytes += len(payload)
+                        for q in list(self._sub_v_qs):
+                            try:
+                                q.put_nowait(payload)
+                            except queue.Full:
+                                pass
+                    elif stream_id == AUDIO_STREAM_ID:
+                        a_bytes += len(payload)
+                        for q in list(self._sub_a_qs):
+                            try:
+                                q.put_nowait(payload)
+                            except queue.Full:
+                                pass
+        except Exception as exc:
+            _LOGGER.debug(
+                "Hp7StreamRelay: broadcast reader stopped: %s", exc
+            )
+        finally:
+            for q in list(self._sub_v_qs) + list(self._sub_a_qs):
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    pass
+            _LOGGER.debug(
+                "Hp7StreamRelay: broadcast done video=%d B audio=%d B",
+                v_bytes, a_bytes,
+            )
 
     def _required_cooldown(self) -> float:
         if self._consecutive_failures >= LOCKOUT_THRESHOLD:
@@ -275,54 +444,35 @@ class Hp7StreamRelay:
             return
 
         loop = asyncio.get_event_loop()
-        vtm = None
         proc: Optional[asyncio.subprocess.Process] = None
         v_listener: Optional[socket.socket] = None
         a_listener: Optional[socket.socket] = None
         threads: List[threading.Thread] = []
         stop_event = threading.Event()
+        v_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
+            maxsize=PAYLOAD_QUEUE_SIZE
+        )
+        a_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
+            maxsize=PAYLOAD_QUEUE_SIZE
+        )
 
-        async with self._connect_lock:
-            self._last_attempt = loop.time()
+        # Ensure a shared VTM is running (this is the cold path on first
+        # connect; subsequent connects reuse the same session for the next
+        # PREWARM_IDLE_TIMEOUT seconds after the last client leaves).
+        await self.prewarm()
+        if self._shared_vtm is None:
             try:
-                await loop.run_in_executor(None, self._api.ensure_client)
-                ezviz_client = self._api._client
-                if ezviz_client is None:
-                    raise RuntimeError(
-                        "EzvizClient unavailable after ensure_client()"
-                    )
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return
 
-                vtm = await loop.run_in_executor(
-                    None,
-                    lambda: open_cloud_stream(
-                        ezviz_client, self._serial, channel=self._channel
-                    ),
-                )
-                info = await loop.run_in_executor(None, vtm.start)
-                _LOGGER.info(
-                    "Hp7StreamRelay: VTM stream up (serial=%s ssn=%s)",
-                    self._serial, getattr(info, "streamssn", "?"),
-                )
-                self._consecutive_failures = 0
-                self._last_error = None
-            except Exception as exc:
-                self._consecutive_failures += 1
-                self._last_error = str(exc)
-                _LOGGER.warning(
-                    "Hp7StreamRelay: VTM connect failed (%d/%d): %s",
-                    self._consecutive_failures, LOCKOUT_THRESHOLD, exc,
-                )
-                if vtm is not None:
-                    try:
-                        await loop.run_in_executor(None, vtm.close)
-                    except Exception:
-                        pass
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except Exception:
-                    pass
-                return
+        # Subscribe to the broadcast.
+        self._sub_v_qs.append(v_q)
+        self._sub_a_qs.append(a_q)
+        self._active_clients += 1
+        self._arm_idle_timer()  # cancel idle teardown while we're connected
 
         try:
             v_port = _free_local_port()
@@ -369,19 +519,7 @@ class Hp7StreamRelay:
                 stderr=asyncio.subprocess.DEVNULL,
             )
 
-            v_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
-                maxsize=PAYLOAD_QUEUE_SIZE
-            )
-            a_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
-                maxsize=PAYLOAD_QUEUE_SIZE
-            )
-
-            reader_t = threading.Thread(
-                target=_reader_thread,
-                args=(vtm, v_q, a_q, stop_event),
-                name=f"hp7-vtm-reader-{self._serial}",
-                daemon=True,
-            )
+            # Reader is the broadcast (shared VTM); only senders are per-client.
             v_sender_t = threading.Thread(
                 target=_sender_thread,
                 args=(v_listener, v_q, stop_event, "video"),
@@ -394,7 +532,7 @@ class Hp7StreamRelay:
                 name=f"hp7-vtm-asend-{self._serial}",
                 daemon=True,
             )
-            threads = [reader_t, v_sender_t, a_sender_t]
+            threads = [v_sender_t, a_sender_t]
             for t in threads:
                 t.start()
 
@@ -415,6 +553,23 @@ class Hp7StreamRelay:
             )
         finally:
             stop_event.set()
+            # Unsubscribe from the shared broadcast.
+            for q in (v_q, a_q):
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    pass
+            try:
+                self._sub_v_qs.remove(v_q)
+            except ValueError:
+                pass
+            try:
+                self._sub_a_qs.remove(a_q)
+            except ValueError:
+                pass
+            self._active_clients = max(0, self._active_clients - 1)
+            self._arm_idle_timer()
+
             if proc is not None:
                 try:
                     proc.kill()
@@ -423,11 +578,6 @@ class Hp7StreamRelay:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=FFMPEG_KILL_TIMEOUT)
                 except (asyncio.TimeoutError, Exception):
-                    pass
-            if vtm is not None:
-                try:
-                    await loop.run_in_executor(None, vtm.close)
-                except Exception:
                     pass
             for listener in (v_listener, a_listener):
                 if listener is not None:
