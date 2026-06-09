@@ -348,6 +348,14 @@ class Hp7StreamRelay:
                 # AudioSpecificConfig extradata (the inbound ADTS strips it).
                 "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                 "-max_interleave_delta", "0",
+                # Inject SPS/PPS in front of every IDR so HA's Stream worker
+                # can probe the codec mid-stream (otherwise it bails out with
+                # "Immediate exit requested" on devices where the inbound
+                # stream skips them, e.g. CP5 in issue #33).
+                "-bsf:v", "dump_extra",
+                "-mpegts_flags", "+resend_headers+initial_discontinuity",
+                "-pat_period", "1",
+                "-sdt_period", "1",
                 "-f", "mpegts", "pipe:1",
             ]
 
