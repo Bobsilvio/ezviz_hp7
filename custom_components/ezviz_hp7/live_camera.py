@@ -268,8 +268,9 @@ class Hp7StreamRelay:
         sock = self._server.sockets[0]
         self._port = int(sock.getsockname()[1])
         _LOGGER.debug(
-            "Hp7StreamRelay listening on tcp://127.0.0.1:%d (serial=%s)",
-            self._port, self._serial,
+            "Hp7StreamRelay listening on tcp://127.0.0.1:%d "
+            "(serial=%s aggressive_mpegts=%s)",
+            self._port, self._serial, self._aggressive_mpegts,
         )
 
     async def stop(self) -> None:
