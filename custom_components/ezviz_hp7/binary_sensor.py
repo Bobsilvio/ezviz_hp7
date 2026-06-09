@@ -58,7 +58,14 @@ ALARM_MAP: list[tuple[list[str], str, str, BinarySensorDeviceClass | None, str]]
         "mdi:gate-open",
     ),
     (
-        ["EZVIZ app unlock the lock", "Monitor unlock the lock"],
+        # Generic catch-all "the lock just opened" — fires for app, monitor,
+        # RFID, face, palm, code, exit button. The category-specific sensors
+        # below still distinguish HOW it was opened; this one summarises
+        # WHETHER it opened. Regression from 0.9.0: pre-split this used to
+        # be the only door sensor, after splitting it only matched EZVIZ-app
+        # and Monitor strings and stayed False on RFID/face/palm/code unlocks
+        # (#32 — Lorenzo).
+        ["unlock the lock"],
         "unlock_lock",
         None,
         "mdi:lock-open-variant",
