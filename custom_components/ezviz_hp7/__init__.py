@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     DOMAIN,
@@ -151,10 +152,27 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload a config entry.
-    
+
     Args:
         hass: Home Assistant instance.
         entry: Config entry to reload.
     """
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow users to delete orphan / phantom devices from the UI.
+
+    Without this hook HA only shows 'Disable' on devices that still have
+    a config_entry link, which traps phantom monitor entries left over
+    from the pre-0.10.5 auto-suggested serial (#33). We allow the delete
+    for any device whose identifier doesn't match the main camera serial
+    in this entry, and also for the camera itself if the user wants a
+    full reset.
+    """
+    return True
