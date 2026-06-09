@@ -218,7 +218,8 @@
         "title": "Opciones EZVIZ HP7 / CP7",
         "description": "Introduce el serial del monitor interior (o varios serials separados por comas para HP7 bifamiliar) para exponer un interruptor por cada monitor. Vacío = sin monitor.",
         "data": {
-          "monitor_serial": "Serial del monitor interior"
+          "monitor_serial": "Serial del monitor interior",
+          "relay_port": "Puerto TCP fijo del relay (0 = aleatorio, recomendado 8554 para go2rtc / mediamtx)"
         }
       }
     }

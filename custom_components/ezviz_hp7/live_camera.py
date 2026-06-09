@@ -204,11 +204,15 @@ class Hp7StreamRelay:
         serial: str,
         channel: int = 1,
         ffmpeg_path: str = "ffmpeg",
+        listen_port: int = 0,
     ) -> None:
         self._api = api
         self._serial = serial
         self._channel = channel
         self._ffmpeg_path = ffmpeg_path
+        # Requested fixed port (0 = pick a free one). External consumers
+        # like go2rtc need a stable URL; OptionsFlow exposes this.
+        self._listen_port = int(listen_port) if listen_port else 0
         self._server: Optional[asyncio.AbstractServer] = None
         self._port: int = 0
         self._last_attempt: float = 0.0
@@ -237,9 +241,25 @@ class Hp7StreamRelay:
     async def start(self) -> None:
         if self._server is not None:
             return
-        self._server = await asyncio.start_server(
-            self._handle_client, "127.0.0.1", 0
-        )
+        # Try the configured fixed port first; fall back to a random free
+        # one if it's taken so HA setup doesn't fail when (e.g.) the user
+        # left a previous relay running.
+        try:
+            self._server = await asyncio.start_server(
+                self._handle_client, "127.0.0.1", self._listen_port
+            )
+        except OSError as exc:
+            if self._listen_port:
+                _LOGGER.warning(
+                    "Hp7StreamRelay: fixed port %d busy (%s); falling back to "
+                    "a random one",
+                    self._listen_port, exc,
+                )
+                self._server = await asyncio.start_server(
+                    self._handle_client, "127.0.0.1", 0
+                )
+            else:
+                raise
         sock = self._server.sockets[0]
         self._port = int(sock.getsockname()[1])
         _LOGGER.debug(
@@ -688,8 +708,11 @@ async def async_setup_live_entities(
     serial: str = data["serial"]
     model: str = data.get("model") or "HP7"
     api: "Hp7Api" = data["api"]
+    relay_port: int = int(data.get("relay_port") or 0)
 
-    relay = Hp7StreamRelay(api=api, serial=serial, channel=1)
+    relay = Hp7StreamRelay(
+        api=api, serial=serial, channel=1, listen_port=relay_port
+    )
     await relay.start()
     data["live_relay"] = relay
 

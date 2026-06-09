@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN, PLATFORMS, CONF_MONITOR_SERIAL
+from .const import DOMAIN, PLATFORMS, CONF_MONITOR_SERIAL, CONF_RELAY_PORT
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
 from .device_info import DEFAULT_MODEL, detect_model
@@ -50,6 +50,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if isinstance(chunk, str) and chunk.strip():
                 monitor_serials.append(chunk.strip())
     monitor_serial = monitor_serials or None
+    # Live-relay fixed TCP port (0 = pick a free one at start). Lets external
+    # consumers (go2rtc, mediamtx, Frigate) keep a stable URL across HA
+    # restarts.
+    try:
+        relay_port = int(
+            entry.options.get(
+                CONF_RELAY_PORT, entry.data.get(CONF_RELAY_PORT, 0)
+            )
+            or 0
+        )
+    except (TypeError, ValueError):
+        relay_port = 0
+    if relay_port < 0 or relay_port > 65535:
+        relay_port = 0
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -81,6 +95,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "serial": serial,
         "monitor_serial": monitor_serial,
         "model": model,
+        "relay_port": relay_port,
         "coordinator": coordinator,
     }
 

@@ -218,7 +218,8 @@
         "title": "EZVIZ HP7 / CP7 options",
         "description": "Enter the indoor monitor serial (or several serials separated by commas for the HP7 two-family setup) to expose a dedicated switch per monitor. Empty = no monitor.",
         "data": {
-          "monitor_serial": "Indoor monitor serial"
+          "monitor_serial": "Indoor monitor serial",
+          "relay_port": "Fixed TCP port for the live relay (0 = random, suggested 8554 for go2rtc / mediamtx)"
         }
       }
     }

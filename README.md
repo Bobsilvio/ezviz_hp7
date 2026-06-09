@@ -159,6 +159,25 @@ A `camera.ezviz_hp7_<serial>_live` entity exposes that live stream. Under the ho
 
 A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic.
 
+### Exposing the live stream as RTSP (go2rtc / Frigate)
+
+The relay listens on a random port by default. Set a **Fixed TCP port** (e.g. `8554`) in Settings → Devices → EZVIZ HP7 / CP7 → Configure so external consumers can keep a stable URL across HA restarts. Then in go2rtc (already shipped in HA core):
+
+```yaml
+# configuration.yaml
+go2rtc:
+  streams:
+    hp7:
+      - tcp://127.0.0.1:8554
+```
+
+go2rtc will publish the stream as:
+
+- `rtsp://homeassistant.local:8554/hp7`
+- HLS / WebRTC / MSE endpoints
+
+Frigate then ingests `rtsp://homeassistant.local:8554/hp7` like any other camera, with `record` and `detect` roles.
+
 ---
 
 ## 🌐 Translations

@@ -4,6 +4,11 @@ DOMAIN = "ezviz_hp7"
 CONF_REGION = "region"
 CONF_SERIAL = "serial"
 CONF_MONITOR_SERIAL = "monitor_serial"
+# Fix the local TCP port the live-stream relay listens on. Default = 0 means
+# "pick a free port at startup"; set a constant value (e.g. 8554) so external
+# tools like go2rtc, mediamtx or Frigate can keep a stable URL across HA
+# restarts.
+CONF_RELAY_PORT = "relay_port"
 
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]

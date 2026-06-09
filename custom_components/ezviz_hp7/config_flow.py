@@ -10,7 +10,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 
 from .api import Hp7Api
-from .const import DOMAIN, CONF_REGION, CONF_SERIAL, CONF_MONITOR_SERIAL
+from .const import (
+    DOMAIN,
+    CONF_REGION,
+    CONF_SERIAL,
+    CONF_MONITOR_SERIAL,
+    CONF_RELAY_PORT,
+)
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
 
 CONF_SMS_CODE = "sms_code"
@@ -303,8 +309,18 @@ class OptionsFlow(config_entries.OptionsFlow):
         """Manage options."""
         if user_input is not None:
             monitor = (user_input.get(CONF_MONITOR_SERIAL) or "").strip()
+            try:
+                relay_port = int(user_input.get(CONF_RELAY_PORT) or 0)
+            except (TypeError, ValueError):
+                relay_port = 0
+            if relay_port < 0 or relay_port > 65535:
+                relay_port = 0
             return self.async_create_entry(
-                title="", data={CONF_MONITOR_SERIAL: monitor}
+                title="",
+                data={
+                    CONF_MONITOR_SERIAL: monitor,
+                    CONF_RELAY_PORT: relay_port,
+                },
             )
 
         # Default suggestion: split the camera serial on '-'. EZVIZ HP7
@@ -323,7 +339,22 @@ class OptionsFlow(config_entries.OptionsFlow):
         )
         if isinstance(current, (list, tuple)):
             current = ", ".join(str(s) for s in current if s)
+
+        current_port = self.config_entry.options.get(
+            CONF_RELAY_PORT,
+            self.config_entry.data.get(CONF_RELAY_PORT, 0),
+        )
+        try:
+            current_port_int = int(current_port or 0)
+        except (TypeError, ValueError):
+            current_port_int = 0
+
         schema = vol.Schema(
-            {vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str}
+            {
+                vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
+                vol.Optional(
+                    CONF_RELAY_PORT, default=current_port_int
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=65535)),
+            }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

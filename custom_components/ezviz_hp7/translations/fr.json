@@ -218,7 +218,8 @@
         "title": "Options EZVIZ HP7 / CP7",
         "description": "Saisissez le numéro de série du moniteur intérieur (ou plusieurs séparés par virgules pour HP7 bi-famille) pour exposer un interrupteur par moniteur. Vide = aucun moniteur.",
         "data": {
-          "monitor_serial": "Numéro de série du moniteur intérieur"
+          "monitor_serial": "Numéro de série du moniteur intérieur",
+          "relay_port": "Port TCP fixe du relai (0 = aléatoire, recommandé 8554 pour go2rtc / mediamtx)"
         }
       }
     }
