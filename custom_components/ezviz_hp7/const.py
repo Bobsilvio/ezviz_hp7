@@ -24,7 +24,17 @@ CONF_VIDEO_CODEC = "video_codec"
 VIDEO_CODEC_H264 = "h264"
 VIDEO_CODEC_HEVC = "hevc"
 VIDEO_CODEC_AUTO = "auto"
-VIDEO_CODECS = [VIDEO_CODEC_AUTO, VIDEO_CODEC_H264, VIDEO_CODEC_HEVC]
+# Passthrough HEVC without transcoding. For low-power hosts (RPi etc.)
+# where libx264 pegs the CPU (#36, 4lrick) AND a player that can decode
+# H.265 itself (Safari, native HEVC, or downstream Frigate/RTSP). Browsers
+# on the WebRTC path mostly can't show this, so it's not the default.
+VIDEO_CODEC_HEVC_COPY = "hevc_copy"
+VIDEO_CODECS = [
+    VIDEO_CODEC_AUTO,
+    VIDEO_CODEC_H264,
+    VIDEO_CODEC_HEVC,
+    VIDEO_CODEC_HEVC_COPY,
+]
 
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]

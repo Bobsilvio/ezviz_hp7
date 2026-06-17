@@ -601,14 +601,20 @@ class Hp7StreamRelay:
             v_listener = _start_local_listener(v_port)
             a_listener = _start_local_listener(a_port)
 
-            # Resolve the input codec. "auto" prefers the sniffed value from
-            # the broadcast reader, falling back to h264 if nothing has been
-            # detected yet (firmware that never emits parameter sets, #33).
-            if self._video_codec in ("h264", "hevc"):
-                in_codec = self._video_codec
+            # Resolve the input codec + whether to transcode.
+            #   h264       -> input h264, copy
+            #   hevc       -> input hevc, transcode to h264 (WebRTC-safe)
+            #   hevc_copy  -> input hevc, copy (low-power hosts, #36)
+            #   auto       -> sniff; hevc gets transcoded, else copy
+            if self._video_codec in ("h264", "hevc", "hevc_copy"):
+                cfg = self._video_codec
+            elif self._detected_codec == "hevc":
+                cfg = "hevc"
             else:
-                in_codec = self._detected_codec or "h264"
-            in_fmt = "hevc" if in_codec == "hevc" else "h264"
+                cfg = "h264"
+            in_is_hevc = cfg in ("hevc", "hevc_copy")
+            transcode = cfg == "hevc"
+            in_fmt = "hevc" if in_is_hevc else "h264"
 
             cmd = [
                 self._ffmpeg_path,
@@ -624,10 +630,11 @@ class Hp7StreamRelay:
                 "-i", f"tcp://127.0.0.1:{a_port}",
                 "-map", "0:v:0", "-map", "1:a:0",
             ]
-            if in_codec == "hevc":
-                # HEVC must be transcoded to H.264: HA's go2rtc/WebRTC path
-                # can't hand H.265 to most browsers, so a copy leaves a grey
-                # screen (#36, #37). zerolatency keeps the relay live.
+            if transcode:
+                # HEVC->H.264: HA's go2rtc/WebRTC path can't hand H.265 to
+                # most browsers, so a copy leaves a grey screen (#36, #37).
+                # zerolatency keeps the relay live. Heavy on weak CPUs — the
+                # hevc_copy option skips this for hosts that can't afford it.
                 cmd += [
                     "-c:v", "libx264",
                     "-preset", "ultrafast", "-tune", "zerolatency",
@@ -652,7 +659,7 @@ class Hp7StreamRelay:
             # HEVC->H.264, libx264 already inlines SPS/PPS in front of every
             # IDR, so the filter would be redundant (and rejected against the
             # encoded output).
-            if self._aggressive_mpegts and in_codec != "hevc":
+            if self._aggressive_mpegts and not transcode:
                 cmd += ["-bsf:v", "dump_extra"]
             cmd += [
                 "-mpegts_flags", "+resend_headers",

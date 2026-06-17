@@ -221,7 +221,7 @@
           "monitor_serial": "Indoor monitor serial",
           "relay_port": "Fixed TCP port for the live relay (0 = random, suggested 8554 for go2rtc / mediamtx)",
           "aggressive_mpegts": "Aggressive MPEG-TS compatibility (enable if you see 'Immediate exit requested' in logs; safe to leave OFF by default)",
-          "video_codec": "Video codec (auto = detect; pick hevc if a newer HP7/HPD7 shows a grey screen — it transcodes H.265 to H.264 for WebRTC)"
+          "video_codec": "Video codec (auto = detect; hevc transcodes H.265 to H.264 for WebRTC; hevc_copy passes H.265 through untouched for low-power hosts / Frigate / Safari)"
         }
       }
     }
