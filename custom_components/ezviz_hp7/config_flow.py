@@ -17,6 +17,9 @@ from .const import (
     CONF_MONITOR_SERIAL,
     CONF_RELAY_PORT,
     CONF_AGGRESSIVE_MPEGTS,
+    CONF_VIDEO_CODEC,
+    VIDEO_CODEC_AUTO,
+    VIDEO_CODECS,
 )
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
 
@@ -317,12 +320,18 @@ class OptionsFlow(config_entries.OptionsFlow):
             if relay_port < 0 or relay_port > 65535:
                 relay_port = 0
             aggressive = bool(user_input.get(CONF_AGGRESSIVE_MPEGTS, False))
+            codec = str(
+                user_input.get(CONF_VIDEO_CODEC) or VIDEO_CODEC_AUTO
+            ).lower()
+            if codec not in VIDEO_CODECS:
+                codec = VIDEO_CODEC_AUTO
             return self.async_create_entry(
                 title="",
                 data={
                     CONF_MONITOR_SERIAL: monitor,
                     CONF_RELAY_PORT: relay_port,
                     CONF_AGGRESSIVE_MPEGTS: aggressive,
+                    CONF_VIDEO_CODEC: codec,
                 },
             )
 
@@ -354,6 +363,16 @@ class OptionsFlow(config_entries.OptionsFlow):
             )
         )
 
+        current_codec = str(
+            self.config_entry.options.get(
+                CONF_VIDEO_CODEC,
+                self.config_entry.data.get(CONF_VIDEO_CODEC, VIDEO_CODEC_AUTO),
+            )
+            or VIDEO_CODEC_AUTO
+        ).lower()
+        if current_codec not in VIDEO_CODECS:
+            current_codec = VIDEO_CODEC_AUTO
+
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
@@ -363,6 +382,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_AGGRESSIVE_MPEGTS, default=current_aggressive
                 ): bool,
+                vol.Optional(
+                    CONF_VIDEO_CODEC, default=current_codec
+                ): vol.In(VIDEO_CODECS),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

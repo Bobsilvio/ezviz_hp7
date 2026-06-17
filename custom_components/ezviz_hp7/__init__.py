@@ -15,6 +15,9 @@ from .const import (
     CONF_MONITOR_SERIAL,
     CONF_RELAY_PORT,
     CONF_AGGRESSIVE_MPEGTS,
+    CONF_VIDEO_CODEC,
+    VIDEO_CODEC_AUTO,
+    VIDEO_CODECS,
 )
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
@@ -77,6 +80,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.data.get(CONF_AGGRESSIVE_MPEGTS, False),
         )
     )
+    video_codec = str(
+        entry.options.get(
+            CONF_VIDEO_CODEC,
+            entry.data.get(CONF_VIDEO_CODEC, VIDEO_CODEC_AUTO),
+        )
+        or VIDEO_CODEC_AUTO
+    ).lower()
+    if video_codec not in VIDEO_CODECS:
+        video_codec = VIDEO_CODEC_AUTO
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -110,6 +122,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "model": model,
         "relay_port": relay_port,
         "aggressive_mpegts": aggressive_mpegts,
+        "video_codec": video_codec,
         "coordinator": coordinator,
     }
 

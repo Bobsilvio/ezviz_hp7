@@ -15,6 +15,16 @@ CONF_RELAY_PORT = "relay_port"
 # Bobsilvio's HP7 (#33) because his firmware already inlines SPS/PPS and
 # dump_extra duplicated them. Make it opt-in so each user can pick.
 CONF_AGGRESSIVE_MPEGTS = "aggressive_mpegts"
+# Video codec emitted by the doorbell. Older HP7/CP7 firmware streams H.264;
+# newer HP7 (HPD7) firmware streams H.265/HEVC (#36, #37). The relay must tell
+# ffmpeg which raw elementary stream it's reading, AND when HEVC it transcodes
+# down to H.264 so HA's go2rtc/WebRTC path (which most browsers can't decode as
+# HEVC) shows a picture instead of a grey screen.
+CONF_VIDEO_CODEC = "video_codec"
+VIDEO_CODEC_H264 = "h264"
+VIDEO_CODEC_HEVC = "hevc"
+VIDEO_CODEC_AUTO = "auto"
+VIDEO_CODECS = [VIDEO_CODEC_AUTO, VIDEO_CODEC_H264, VIDEO_CODEC_HEVC]
 
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]

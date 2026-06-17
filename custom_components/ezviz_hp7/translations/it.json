@@ -220,7 +220,8 @@
         "data": {
           "monitor_serial": "Serial monitor interno",
           "relay_port": "Porta TCP fissa relay (0 = casuale, suggerito 8554 per go2rtc/mediamtx)",
-          "aggressive_mpegts": "Compatibilità MPEG-TS aggressiva (abilita se vedi 'Immediate exit requested' nei log; sicuro lasciarlo OFF di default)"
+          "aggressive_mpegts": "Compatibilità MPEG-TS aggressiva (abilita se vedi 'Immediate exit requested' nei log; sicuro lasciarlo OFF di default)",
+          "video_codec": "Codec video (auto = rileva; scegli hevc se un HP7/HPD7 recente mostra schermo grigio — transcodifica H.265 in H.264 per WebRTC)"
         }
       }
     }

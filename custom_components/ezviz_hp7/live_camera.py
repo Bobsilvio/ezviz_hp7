@@ -86,6 +86,50 @@ INPUT_ACCEPT_TIMEOUT = 20.0
 PREWARM_IDLE_TIMEOUT = 120.0
 
 
+def _iter_nal_types(data: bytes):
+    """Yield raw NAL header bytes (the byte right after each start code).
+
+    Handles both 3-byte (00 00 01) and 4-byte (00 00 00 01) start codes.
+    """
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if data[i] == 0 and data[i + 1] == 0:
+            if data[i + 2] == 1:
+                if i + 3 < n:
+                    yield data[i + 3]
+                i += 4
+                continue
+            if data[i + 2] == 0 and i + 3 < n and data[i + 3] == 1:
+                if i + 4 < n:
+                    yield data[i + 4]
+                i += 5
+                continue
+        i += 1
+
+
+def _sniff_video_codec(payload: bytes) -> Optional[str]:
+    """Best-effort H.264 vs H.265 detection from raw NAL header bytes.
+
+    We only trust the unambiguous parameter-set headers, matched as exact
+    bytes (nuh_layer_id=0), to avoid false positives — e.g. an H.264
+    P-slice header 0x41 would otherwise decode as HEVC nal_type 32 under a
+    naive (byte>>1)&0x3F.
+
+    HEVC param sets: VPS=0x40, SPS=0x42, PPS=0x44.
+    H.264 param sets / IDR: SPS=0x67, PPS=0x68, IDR=0x65.
+
+    Some firmware (#33) never emits parameter sets at all; for those this
+    returns None and the caller falls back to the configured default.
+    """
+    for nal in _iter_nal_types(payload):
+        if nal in (0x40, 0x42, 0x44):
+            return "hevc"
+        if nal in (0x67, 0x68, 0x65):
+            return "h264"
+    return None
+
+
 def _free_local_port() -> int:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(("127.0.0.1", 0))
@@ -206,11 +250,17 @@ class Hp7StreamRelay:
         ffmpeg_path: str = "ffmpeg",
         listen_port: int = 0,
         aggressive_mpegts: bool = False,
+        video_codec: str = "auto",
     ) -> None:
         self._api = api
         self._serial = serial
         self._channel = channel
         self._ffmpeg_path = ffmpeg_path
+        # Configured codec: "auto" | "h264" | "hevc". "auto" inspects the
+        # first NAL units off the broadcast and sets _detected_codec; the
+        # other two force it. Newer HP7 (HPD7) streams HEVC (#36, #37).
+        self._video_codec = (video_codec or "auto").lower()
+        self._detected_codec: Optional[str] = None
         # Requested fixed port (0 = pick a free one). External consumers
         # like go2rtc need a stable URL; OptionsFlow exposes this.
         self._listen_port = int(listen_port) if listen_port else 0
@@ -269,8 +319,9 @@ class Hp7StreamRelay:
         self._port = int(sock.getsockname()[1])
         _LOGGER.debug(
             "Hp7StreamRelay listening on tcp://127.0.0.1:%d "
-            "(serial=%s aggressive_mpegts=%s)",
+            "(serial=%s aggressive_mpegts=%s video_codec=%s)",
             self._port, self._serial, self._aggressive_mpegts,
+            self._video_codec,
         )
 
     async def stop(self) -> None:
@@ -411,6 +462,15 @@ class Hp7StreamRelay:
                         continue
                     if stream_id == VIDEO_STREAM_ID:
                         v_bytes += len(payload)
+                        if self._detected_codec is None:
+                            guess = _sniff_video_codec(payload)
+                            if guess is not None:
+                                self._detected_codec = guess
+                                _LOGGER.info(
+                                    "Hp7StreamRelay: detected video codec=%s "
+                                    "(serial=%s)",
+                                    guess, self._serial,
+                                )
                         for q in list(self._sub_v_qs):
                             try:
                                 q.put_nowait(payload)
@@ -541,20 +601,41 @@ class Hp7StreamRelay:
             v_listener = _start_local_listener(v_port)
             a_listener = _start_local_listener(a_port)
 
+            # Resolve the input codec. "auto" prefers the sniffed value from
+            # the broadcast reader, falling back to h264 if nothing has been
+            # detected yet (firmware that never emits parameter sets, #33).
+            if self._video_codec in ("h264", "hevc"):
+                in_codec = self._video_codec
+            else:
+                in_codec = self._detected_codec or "h264"
+            in_fmt = "hevc" if in_codec == "hevc" else "h264"
+
             cmd = [
                 self._ffmpeg_path,
                 "-hide_banner", "-loglevel", "error",
                 "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
                 "-analyzeduration", "200000", "-probesize", "200000",
                 "-use_wallclock_as_timestamps", "1",
-                "-f", "h264", "-r", "15",
+                "-f", in_fmt, "-r", "15",
                 "-i", f"tcp://127.0.0.1:{v_port}",
                 "-analyzeduration", "200000", "-probesize", "200000",
                 "-use_wallclock_as_timestamps", "1",
                 "-f", "aac",
                 "-i", f"tcp://127.0.0.1:{a_port}",
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", "copy",
+            ]
+            if in_codec == "hevc":
+                # HEVC must be transcoded to H.264: HA's go2rtc/WebRTC path
+                # can't hand H.265 to most browsers, so a copy leaves a grey
+                # screen (#36, #37). zerolatency keeps the relay live.
+                cmd += [
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast", "-tune", "zerolatency",
+                    "-pix_fmt", "yuv420p",
+                ]
+            else:
+                cmd += ["-c:v", "copy"]
+            cmd += [
                 # Re-encode audio so the mpegts muxer gets a proper AAC
                 # AudioSpecificConfig extradata (the inbound ADTS strips it).
                 "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
@@ -567,7 +648,11 @@ class Hp7StreamRelay:
             # dump_extra, which is what CP5 and andresako's HP7 firmware
             # appear to need — it breaks Bobsilvio's HP7 because his
             # firmware already inlines them.
-            if self._aggressive_mpegts:
+            # dump_extra only makes sense on a stream copy; when we transcode
+            # HEVC->H.264, libx264 already inlines SPS/PPS in front of every
+            # IDR, so the filter would be redundant (and rejected against the
+            # encoded output).
+            if self._aggressive_mpegts and in_codec != "hevc":
                 cmd += ["-bsf:v", "dump_extra"]
             cmd += [
                 "-mpegts_flags", "+resend_headers",
@@ -770,6 +855,7 @@ async def async_setup_live_entities(
     relay_port: int = int(data.get("relay_port") or 0)
 
     aggressive_mpegts = bool(data.get("aggressive_mpegts", False))
+    video_codec = str(data.get("video_codec") or "auto")
 
     relay = Hp7StreamRelay(
         api=api,
@@ -777,6 +863,7 @@ async def async_setup_live_entities(
         channel=1,
         listen_port=relay_port,
         aggressive_mpegts=aggressive_mpegts,
+        video_codec=video_codec,
     )
     await relay.start()
     data["live_relay"] = relay
