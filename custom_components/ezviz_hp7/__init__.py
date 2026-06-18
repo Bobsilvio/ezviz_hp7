@@ -157,7 +157,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, {})
         api: Hp7Api | None = data.get("api")
         if api:
-            api.close()
+            # api.close() does a synchronous HTTP logout (requests.delete);
+            # calling it directly here runs it on the event loop and HA flags
+            # a blocking call, aborting the unload and leaving every entity
+            # `unavailable` until a full restart (#36, hehsni — happens on
+            # every codec/option change since that reloads the entry).
+            await hass.async_add_executor_job(api.close)
         _LOGGER.debug("EZVIZ HP7 integration unloaded for entry %s", entry.entry_id)
     
     return unload_ok
