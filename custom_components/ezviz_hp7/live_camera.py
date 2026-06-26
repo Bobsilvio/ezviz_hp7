@@ -775,6 +775,12 @@ class Hp7StreamRelay:
                 # mpeg demuxer, so no -f h264/hevc guessing.
                 raw_port = _free_local_port()
                 raw_listener = _start_local_listener(raw_port)
+                # video_codec=hevc transcodes to H.264 so HA's WebRTC path
+                # shows a picture (HEVC copy = grey screen, #36 hehsni).
+                # hevc_copy / h264 / auto pass the elementary stream through
+                # untouched (cheap; fine for H.264 firmware or HEVC-capable
+                # players / Frigate).
+                lan_transcode = self._video_codec == "hevc"
                 cmd = [
                     self._ffmpeg_path,
                     "-hide_banner", "-loglevel", "error",
@@ -783,7 +789,16 @@ class Hp7StreamRelay:
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
                     "-map", "0:v:0", "-map", "0:a:0?",
-                    "-c:v", "copy",
+                ]
+                if lan_transcode:
+                    cmd += [
+                        "-c:v", "libx264",
+                        "-preset", "ultrafast", "-tune", "zerolatency",
+                        "-pix_fmt", "yuv420p",
+                    ]
+                else:
+                    cmd += ["-c:v", "copy"]
+                cmd += [
                     "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                     "-max_interleave_delta", "0",
                     "-mpegts_flags", "+resend_headers",
