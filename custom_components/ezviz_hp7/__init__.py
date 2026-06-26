@@ -182,14 +182,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload a config entry.
+    """Reload a config entry (e.g. after an options change).
 
-    Args:
-        hass: Home Assistant instance.
-        entry: Config entry to reload.
+    Must delegate to ``hass.config_entries.async_reload`` rather than
+    calling unload + setup by hand: HA drives the LOADED -> UNLOAD ->
+    SETUP_IN_PROGRESS state machine there, and
+    ``async_config_entry_first_refresh`` is only legal in
+    SETUP_IN_PROGRESS. Calling async_setup_entry directly left the entry
+    in LOADED and raised "called when config entry state is LOADED",
+    which then cascaded into "Config entry was never loaded!" on the next
+    unload.
     """
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_remove_config_entry_device(

@@ -382,6 +382,10 @@ class Hp7StreamRelay:
         # Per-subscriber queues populated by the shared reader.
         self._sub_v_qs: List["queue.Queue[Optional[bytes]]"] = []
         self._sub_a_qs: List["queue.Queue[Optional[bytes]]"] = []
+        # Per-client queues for the LAN raw-MPEG-PS path (single muxed feed).
+        self._sub_raw_qs: List["queue.Queue[Optional[bytes]]"] = []
+        # True while the active shared source is the CPD7 LAN pipeline.
+        self._active_lan: bool = False
         self._idle_handle: Optional[asyncio.TimerHandle] = None
         self._active_clients: int = 0
 
@@ -523,6 +527,9 @@ class Hp7StreamRelay:
                 )
                 return
             self._shared_vtm = vtm
+            self._active_lan = isinstance(
+                vtm, (Cpd7LanSource, _PreStartedSource)
+            )
             self._shared_stop = threading.Event()
             self._shared_reader = threading.Thread(
                 target=self._broadcast_reader,
@@ -585,6 +592,27 @@ class Hp7StreamRelay:
                 if self._shared_stop.is_set():
                     break
                 if not body:
+                    continue
+                if self._active_lan:
+                    # LAN path: the decoder already emits complete MPEG-PS
+                    # (multiplexed video + audio). Fan it out raw to a single
+                    # queue — ffmpeg demuxes it with one input. Splitting it
+                    # into separate video/audio PES inputs and assuming AAC
+                    # froze the stream after a few seconds because the LAN
+                    # audio is MP2, not AAC (#36 digregoriovalerio).
+                    v_bytes += len(body)
+                    for q in list(self._sub_raw_qs):
+                        try:
+                            q.put_nowait(body)
+                        except queue.Full:
+                            pass
+                    if v_bytes >= next_v_log:
+                        _LOGGER.info(
+                            "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
+                            "%d B subs=%d",
+                            v_bytes, len(self._sub_raw_qs),
+                        )
+                        next_v_log = v_bytes + 256 * 1024
                     continue
                 for stream_id, payload in parser.feed(body):
                     if not payload:
@@ -649,7 +677,11 @@ class Hp7StreamRelay:
                     "Hp7StreamRelay: broadcast reader stopped: %s", exc
                 )
         finally:
-            for q in list(self._sub_v_qs) + list(self._sub_a_qs):
+            for q in (
+                list(self._sub_v_qs)
+                + list(self._sub_a_qs)
+                + list(self._sub_raw_qs)
+            ):
                 try:
                     q.put_nowait(None)
                 except queue.Full:
@@ -705,6 +737,10 @@ class Hp7StreamRelay:
         a_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
             maxsize=PAYLOAD_QUEUE_SIZE
         )
+        raw_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
+            maxsize=PAYLOAD_QUEUE_SIZE
+        )
+        raw_listener: Optional[socket.socket] = None
 
         # Ensure a shared VTM is running (this is the cold path on first
         # connect; subsequent connects reuse the same session for the next
@@ -718,84 +754,107 @@ class Hp7StreamRelay:
                 pass
             return
 
-        # Subscribe to the broadcast.
-        self._sub_v_qs.append(v_q)
-        self._sub_a_qs.append(a_q)
+        # Subscribe to the broadcast. LAN serves one muxed MPEG-PS feed;
+        # cloud serves split video/audio PES streams.
+        lan = self._active_lan
+        if lan:
+            self._sub_raw_qs.append(raw_q)
+        else:
+            self._sub_v_qs.append(v_q)
+            self._sub_a_qs.append(a_q)
         self._active_clients += 1
         self._arm_idle_timer()  # cancel idle teardown while we're connected
 
         try:
-            v_port = _free_local_port()
-            a_port = _free_local_port()
-            v_listener = _start_local_listener(v_port)
-            a_listener = _start_local_listener(a_port)
-
-            # Resolve the input codec + whether to transcode.
-            #   h264       -> input h264, copy
-            #   hevc       -> input hevc, transcode to h264 (WebRTC-safe)
-            #   hevc_copy  -> input hevc, copy (low-power hosts, #36)
-            #   auto       -> sniff; hevc gets transcoded, else copy
-            if self._video_codec in ("h264", "hevc", "hevc_copy"):
-                cfg = self._video_codec
-            elif self._detected_codec == "hevc":
-                cfg = "hevc"
-            else:
-                cfg = "h264"
-            in_is_hevc = cfg in ("hevc", "hevc_copy")
-            transcode = cfg == "hevc"
-            in_fmt = "hevc" if in_is_hevc else "h264"
-
-            cmd = [
-                self._ffmpeg_path,
-                "-hide_banner", "-loglevel", "error",
-                "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
-                "-analyzeduration", "200000", "-probesize", "200000",
-                "-use_wallclock_as_timestamps", "1",
-                "-f", in_fmt, "-r", "15",
-                "-i", f"tcp://127.0.0.1:{v_port}",
-                "-analyzeduration", "200000", "-probesize", "200000",
-                "-use_wallclock_as_timestamps", "1",
-                "-f", "aac",
-                "-i", f"tcp://127.0.0.1:{a_port}",
-                "-map", "0:v:0", "-map", "1:a:0",
-            ]
-            if transcode:
-                # HEVC->H.264: HA's go2rtc/WebRTC path can't hand H.265 to
-                # most browsers, so a copy leaves a grey screen (#36, #37).
-                # zerolatency keeps the relay live. Heavy on weak CPUs — the
-                # hevc_copy option skips this for hosts that can't afford it.
-                cmd += [
-                    "-c:v", "libx264",
-                    "-preset", "ultrafast", "-tune", "zerolatency",
-                    "-pix_fmt", "yuv420p",
+            if lan:
+                # LAN: one input, the muxed MPEG-PS feed. ffmpeg demuxes it
+                # internally and copies video; re-encode audio to AAC since
+                # the LAN audio is MP2 and HA's mp4/HLS muxer wants AAC. This
+                # is what makes the LAN stream play past the first few
+                # seconds (#36 digregoriovalerio). Codec autodetected by the
+                # mpeg demuxer, so no -f h264/hevc guessing.
+                raw_port = _free_local_port()
+                raw_listener = _start_local_listener(raw_port)
+                cmd = [
+                    self._ffmpeg_path,
+                    "-hide_banner", "-loglevel", "error",
+                    "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
+                    "-analyzeduration", "1000000", "-probesize", "1000000",
+                    "-f", "mpeg",
+                    "-i", f"tcp://127.0.0.1:{raw_port}",
+                    "-map", "0:v:0", "-map", "0:a:0?",
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+                    "-max_interleave_delta", "0",
+                    "-mpegts_flags", "+resend_headers",
+                    "-pat_period", "1",
+                    "-sdt_period", "1",
+                    "-f", "mpegts", "pipe:1",
                 ]
             else:
-                cmd += ["-c:v", "copy"]
-            cmd += [
-                # Re-encode audio so the mpegts muxer gets a proper AAC
-                # AudioSpecificConfig extradata (the inbound ADTS strips it).
-                "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
-                "-max_interleave_delta", "0",
-            ]
-            # Default safe path (works for Bobsilvio's HP7): only refresh
-            # PAT/PMT + SDT every second so a mid-stream connect can still
-            # discover the codec. Opt-in "aggressive_mpegts" additionally
-            # re-prepends SPS/PPS in front of every IDR via -bsf:v
-            # dump_extra, which is what CP5 and andresako's HP7 firmware
-            # appear to need — it breaks Bobsilvio's HP7 because his
-            # firmware already inlines them.
-            # dump_extra only makes sense on a stream copy; when we transcode
-            # HEVC->H.264, libx264 already inlines SPS/PPS in front of every
-            # IDR, so the filter would be redundant (and rejected against the
-            # encoded output).
-            if self._aggressive_mpegts and not transcode:
-                cmd += ["-bsf:v", "dump_extra"]
-            cmd += [
-                "-mpegts_flags", "+resend_headers",
-                "-pat_period", "1",
-                "-sdt_period", "1",
-                "-f", "mpegts", "pipe:1",
-            ]
+                v_port = _free_local_port()
+                a_port = _free_local_port()
+                v_listener = _start_local_listener(v_port)
+                a_listener = _start_local_listener(a_port)
+
+                # Resolve the input codec + whether to transcode.
+                #   h264       -> input h264, copy
+                #   hevc       -> input hevc, transcode to h264 (WebRTC-safe)
+                #   hevc_copy  -> input hevc, copy (low-power hosts, #36)
+                #   auto       -> sniff; hevc gets transcoded, else copy
+                if self._video_codec in ("h264", "hevc", "hevc_copy"):
+                    cfg = self._video_codec
+                elif self._detected_codec == "hevc":
+                    cfg = "hevc"
+                else:
+                    cfg = "h264"
+                in_is_hevc = cfg in ("hevc", "hevc_copy")
+                transcode = cfg == "hevc"
+                in_fmt = "hevc" if in_is_hevc else "h264"
+
+                cmd = [
+                    self._ffmpeg_path,
+                    "-hide_banner", "-loglevel", "error",
+                    "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
+                    "-analyzeduration", "200000", "-probesize", "200000",
+                    "-use_wallclock_as_timestamps", "1",
+                    "-f", in_fmt, "-r", "15",
+                    "-i", f"tcp://127.0.0.1:{v_port}",
+                    "-analyzeduration", "200000", "-probesize", "200000",
+                    "-use_wallclock_as_timestamps", "1",
+                    "-f", "aac",
+                    "-i", f"tcp://127.0.0.1:{a_port}",
+                    "-map", "0:v:0", "-map", "1:a:0",
+                ]
+                if transcode:
+                    # HEVC->H.264: HA's go2rtc/WebRTC path can't hand H.265 to
+                    # most browsers, so a copy leaves a grey screen (#36, #37).
+                    # zerolatency keeps the relay live. Heavy on weak CPUs —
+                    # hevc_copy skips this for hosts that can't afford it.
+                    cmd += [
+                        "-c:v", "libx264",
+                        "-preset", "ultrafast", "-tune", "zerolatency",
+                        "-pix_fmt", "yuv420p",
+                    ]
+                else:
+                    cmd += ["-c:v", "copy"]
+                cmd += [
+                    # Re-encode audio so the mpegts muxer gets a proper AAC
+                    # AudioSpecificConfig extradata (inbound ADTS strips it).
+                    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+                    "-max_interleave_delta", "0",
+                ]
+                # Opt-in: re-prepend SPS/PPS in front of every IDR for
+                # firmwares that only emit them at the first IDR (#33).
+                # Skipped on transcode (libx264 already inlines them).
+                if self._aggressive_mpegts and not transcode:
+                    cmd += ["-bsf:v", "dump_extra"]
+                cmd += [
+                    "-mpegts_flags", "+resend_headers",
+                    "-pat_period", "1",
+                    "-sdt_period", "1",
+                    "-f", "mpegts", "pipe:1",
+                ]
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -819,20 +878,30 @@ class Hp7StreamRelay:
                         return
                 asyncio.create_task(_drain_ff_err(proc.stderr))
 
-            # Reader is the broadcast (shared VTM); only senders are per-client.
-            v_sender_t = threading.Thread(
-                target=_sender_thread,
-                args=(v_listener, v_q, stop_event, "video"),
-                name=f"hp7-vtm-vsend-{self._serial}",
-                daemon=True,
-            )
-            a_sender_t = threading.Thread(
-                target=_sender_thread,
-                args=(a_listener, a_q, stop_event, "audio"),
-                name=f"hp7-vtm-asend-{self._serial}",
-                daemon=True,
-            )
-            threads = [v_sender_t, a_sender_t]
+            # Reader is the broadcast (shared source); only senders are
+            # per-client. LAN feeds a single muxed socket; cloud feeds two.
+            if lan:
+                raw_sender_t = threading.Thread(
+                    target=_sender_thread,
+                    args=(raw_listener, raw_q, stop_event, "mpegps"),
+                    name=f"hp7-lan-send-{self._serial}",
+                    daemon=True,
+                )
+                threads = [raw_sender_t]
+            else:
+                v_sender_t = threading.Thread(
+                    target=_sender_thread,
+                    args=(v_listener, v_q, stop_event, "video"),
+                    name=f"hp7-vtm-vsend-{self._serial}",
+                    daemon=True,
+                )
+                a_sender_t = threading.Thread(
+                    target=_sender_thread,
+                    args=(a_listener, a_q, stop_event, "audio"),
+                    name=f"hp7-vtm-asend-{self._serial}",
+                    daemon=True,
+                )
+                threads = [v_sender_t, a_sender_t]
             for t in threads:
                 t.start()
 
@@ -854,19 +923,26 @@ class Hp7StreamRelay:
         finally:
             stop_event.set()
             # Unsubscribe from the shared broadcast.
-            for q in (v_q, a_q):
+            for q in (v_q, a_q, raw_q):
                 try:
                     q.put_nowait(None)
                 except queue.Full:
                     pass
-            try:
-                self._sub_v_qs.remove(v_q)
-            except ValueError:
-                pass
-            try:
-                self._sub_a_qs.remove(a_q)
-            except ValueError:
-                pass
+            for qs, q in (
+                (self._sub_v_qs, v_q),
+                (self._sub_a_qs, a_q),
+                (self._sub_raw_qs, raw_q),
+            ):
+                try:
+                    qs.remove(q)
+                except ValueError:
+                    pass
+            for lst in (v_listener, a_listener, raw_listener):
+                if lst is not None:
+                    try:
+                        lst.close()
+                    except OSError:
+                        pass
             self._active_clients = max(0, self._active_clients - 1)
             self._arm_idle_timer()
 
