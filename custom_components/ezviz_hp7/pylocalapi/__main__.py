@@ -6,14 +6,16 @@ Small utility CLI for testing and scripting Ezviz operations.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 import datetime as dt
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
 import logging
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -23,20 +25,59 @@ from typing import Any, BinaryIO, cast
 from urllib.parse import parse_qs, urlparse
 
 from .camera import EzvizCamera
+from .cas import CasDeviceSession, EzvizCAS
 from .client import EzvizClient
 from .cloud_stream import open_cloud_stream
 from .constants import BatteryCameraWorkMode, DefenseModeType, DeviceSwitchType
 from .exceptions import EzvizAuthVerificationCode, PyEzvizError
+from .hcnetsdk import (
+    HCNETSDK_COMMAND_PORT_CONTROL_FAMILY,
+    EzvizCasDeviceInfo,
+    EzvizLocalAuthenticationAttrs,
+    EzvizLocalPreviewRequest,
+    EzvizLocalReceiverInfo,
+    EzvizLocalReceiverInfoAttrs,
+    EzvizLocalReceiverInfoEx,
+    EzvizLocalReceiverInfoExAttrs,
+    HcNetSdkCommandPortControlTemplate,
+    HcNetSdkLanEndpoint,
+    classify_ezviz_local_sdk_body,
+    parse_hcnetsdk_tcp_frame,
+)
 from .light_bulb import EzvizLightBulb
+from .local_stream import (
+    HCNETSDK_COMMAND_PORT_NATIVE_PLAN_APP_LAN_LIVE_VIEW,
+    HcNetSdkCommandPortGeneratedMultiSocketPlan,
+    HcNetSdkCommandPortGeneratedSocketStep,
+    HcNetSdkCommandPortMultiSocketPlan,
+    HcNetSdkCommandPortSocketStep,
+    _idmx_local_packets_to_annexb_with_codec,
+    copy_local_stream_to_decrypted_mpegps,
+    copy_local_stream_to_decrypted_mpegts,
+    copy_local_stream_to_mpegps,
+    copy_local_stream_to_mpegts,
+    get_local_sdk_stream_credentials_from_client,
+    hcnetsdk_command_port_generated_plan_from_socket_plan,
+    hcnetsdk_command_port_native_lan_live_view_plan,
+    open_local_sdk_stream,
+    summarize_h264_annexb_idr_windows,
+    summarize_h264_annexb_units,
+    summarize_hevc_annexb_irap_windows,
+    summarize_idmx_h264_local_packets,
+)
 from .stream import (
+    StreamTransport,
     decrypt_hikvision_ps_video,
     detect_hikvision_ps_video_nalu_header_size,
+    detect_transport,
     download_ezviz_cloud_replay,
     mpeg_ps_decryptable_prefix_length,
+    rtp_payload,
 )
 
 _LOGGER = logging.getLogger(__name__)
 _REAL_EZVIZ_CLIENT = EzvizClient
+HCNETSDK_COMMAND_PLAN_DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -503,17 +544,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=(
             "auto",
             "hevc",
+            "hevc-encrypted-header",
             "h264",
             "h264-clear-header",
             "h264-encrypted-header",
+            "encrypted-header",
         ),
         default="auto",
         help=(
             "Video codec transform when decrypting streamUrl clips: auto detects the "
             "NAL header mode; hevc preserves "
             "the two-byte HEVC NAL header; h264/h264-clear-header preserve the "
-            "one-byte H.264 NAL header; h264-encrypted-header decrypts the H.264 "
-            "NAL header too (default: auto)"
+            "one-byte H.264 NAL header; encrypted-header/hevc-encrypted-header "
+            "decrypts the codec header too (default: auto)"
         ),
     )
     parser_cloud_video_download.add_argument(
@@ -562,18 +605,321 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=(
             "auto",
             "hevc",
+            "hevc-encrypted-header",
             "h264",
             "h264-clear-header",
             "h264-encrypted-header",
+            "encrypted-header",
         ),
         default="auto",
         help=(
             "Video codec transform during decryption: auto detects the NAL header "
             "mode; hevc preserves the two-byte "
             "HEVC NAL header; h264/h264-clear-header preserve the one-byte H.264 "
-            "NAL header; h264-encrypted-header decrypts the H.264 NAL header too "
+            "NAL header; encrypted-header/hevc-encrypted-header decrypts the "
+            "codec header too "
             "(default: auto)"
         ),
+    )
+
+    parser_save = subparsers.add_parser(
+        "save",
+        help="Save a local live clip or camera image to a file",
+    )
+    subparsers_save = parser_save.add_subparsers(dest="save_action")
+    parser_save_clip = subparsers_save.add_parser(
+        "clip",
+        help="Save a direct-local camera clip to a local file",
+    )
+    parser_save_clip.add_argument("--serial", required=True, help="camera SERIAL")
+    parser_save_clip.add_argument(
+        "--source",
+        choices=("local-sdk", "cloud", "hcnetsdk-command-port"),
+        default="local-sdk",
+        help=(
+            "Source to use: direct 9010/9020 SDK, VTM cloud live stream, or "
+            "full HCNetSDK command-port media on port 8000 (default: local-sdk)"
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--channel",
+        type=int,
+        default=1,
+        help="Camera channel number (default: 1)",
+    )
+    parser_save_clip.add_argument(
+        "--output",
+        required=True,
+        help="Local output path for the clip",
+    )
+    parser_save_clip.add_argument(
+        "--duration",
+        type=_parse_duration_seconds,
+        default=10.0,
+        help="Capture duration; accepts seconds or units like 10s/1m (default: 10s)",
+    )
+    parser_save_clip.add_argument(
+        "--max-packets",
+        type=int,
+        default=None,
+        help="Optional packet limit in addition to --duration",
+    )
+    parser_save_clip.add_argument(
+        "--format",
+        choices=("mpegts", "mpegps"),
+        default="mpegts",
+        help="Output container: MPEG-TS is easiest for FFmpeg/Home Assistant (default: mpegts)",
+    )
+    parser_save_clip.add_argument(
+        "--ffmpeg-path",
+        default="ffmpeg",
+        help="FFmpeg executable to use for MPEG-TS remuxing (default: ffmpeg)",
+    )
+    parser_save_clip.add_argument(
+        "--decrypt-video",
+        action="store_true",
+        help="Decrypt encrypted local video before writing/remuxing",
+    )
+    parser_save_clip.add_argument(
+        "--decrypt-codec",
+        choices=(
+            "auto",
+            "hevc",
+            "hevc-encrypted-header",
+            "h264",
+            "h264-clear-header",
+            "h264-encrypted-header",
+            "encrypted-header",
+        ),
+        default="encrypted-header",
+        help="Video codec transform for --decrypt-video (default: encrypted-header)",
+    )
+    parser_save_clip.add_argument(
+        "--media-key",
+        help=(
+            "Camera media decrypt key, or EZVIZ_LOCAL_MEDIA_KEY. This is used "
+            "when --decrypt-video is set."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--media-key-hex",
+        help=(
+            "Hex-encoded binary media decrypt key, or EZVIZ_LOCAL_MEDIA_KEY_HEX. "
+            "Use this when the native local media key is not printable text."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--cas-serial",
+        help="Device serial to send to cloud CAS when it differs from --serial",
+    )
+    parser_save_clip.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Local socket timeout in seconds (default: 10)",
+    )
+    parser_save_clip.add_argument(
+        "--sms-code",
+        help="Optional MFA/elevation code for media key retrieval",
+    )
+    parser_save_clip.add_argument(
+        "--host",
+        help="Camera LAN address for --source hcnetsdk-command-port",
+    )
+    parser_save_clip.add_argument(
+        "--command-port",
+        type=int,
+        help="Camera command port for --source hcnetsdk-command-port (default: 8000)",
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-frame-hex",
+        action="append",
+        default=[],
+        help=(
+            "One complete port-8000 HCNetSDK command frame as hex. May be "
+            "passed more than once."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-frames-file",
+        help=(
+            "JSON or text file containing complete port-8000 command frame hex "
+            "values. JSON may be a list or an object with command_frames/frames."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-plan-file",
+        help=(
+            "JSON file describing a native-style multi-socket port-8000 "
+            "command plan. Use for HCNetSDK flows that open short control "
+            "sockets before the media socket."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-generated-plan-file",
+        help=(
+            "JSON file describing a generated native-style multi-socket "
+            "port-8000 command plan. The CLI logs in first, then renders "
+            "session-relative command templates."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-native-plan",
+        choices=(HCNETSDK_COMMAND_PORT_NATIVE_PLAN_APP_LAN_LIVE_VIEW,),
+        help=(
+            "Use a built-in app-observed native-style generated port-8000 "
+            "command plan. Currently supports app-lan-live-view."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-password",
+        help=(
+            "LAN command-port password for generated HCNetSDK command-port "
+            "plans. This is usually the device verification/LAN password."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-local-ip",
+        help=(
+            "Client LAN IPv4 address to patch into HCNetSDK command-port "
+            "frames when replaying a plan captured on another host."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-metadata-output",
+        help=(
+            "Optional JSON file for sanitized HCNetSDK command-port response "
+            "metadata when saving a clip."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-command-sampled-packets-output",
+        help=(
+            "Optional binary file for the bounded HCNetSDK command-port media "
+            "packet sample used by metadata summaries. The file uses the same "
+            "little-endian $ framing as raw command-port dump artifacts. This "
+            "diagnostic sidecar records sampled packets observed before final "
+            "clean-window trimming/recovery, so it is not an exact byte source "
+            "map for the remuxed clip."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-h264-skip-initial-idr-windows",
+        type=int,
+        default=0,
+        help=(
+            "For clear H.264 IDMX command-port streams, drop this many initial "
+            "IDR-started windows before remuxing (default: 0)."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-h264-trim-to-clean-idr-window",
+        "--hcnetsdk-video-trim-to-clean-window",
+        dest="hcnetsdk_h264_trim_to_clean_idr_window",
+        action="store_true",
+        help=(
+            "For clear IDMX command-port streams, decode-check sampled video "
+            "windows and remux from the first clean one."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-h264-clean-idr-preroll-seconds",
+        "--hcnetsdk-video-clean-window-preroll-seconds",
+        dest="hcnetsdk_h264_clean_idr_preroll_seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Extra capture seconds to allow before clean-window trimming, so "
+            "generated command-port streams can stabilize before the requested "
+            "clip window is kept (default: 0)."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-h264-clean-idr-max-windows",
+        "--hcnetsdk-video-clean-window-max-windows",
+        dest="hcnetsdk_h264_clean_idr_max_windows",
+        type=int,
+        default=32,
+        help=(
+            "Maximum sampled video windows to decode-check when using "
+            "clean-window trimming or waiting (default: 32)."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-h264-wait-for-clean-idr-window",
+        "--hcnetsdk-video-wait-for-clean-window",
+        dest="hcnetsdk_h264_wait_for_clean_idr_window",
+        action="store_true",
+        help=(
+            "For clear IDMX command-port streams, discard startup media until "
+            "a decodable H.264 IDR or HEVC IRAP window is found, then start the requested "
+            "duration window."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-h264-clean-idr-wait-seconds",
+        "--hcnetsdk-video-clean-window-wait-seconds",
+        dest="hcnetsdk_h264_clean_idr_wait_seconds",
+        type=float,
+        default=60.0,
+        help=(
+            "Maximum seconds to wait for a clean video window "
+            "before failing (default: 60)."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--hcnetsdk-read-responses",
+        help=(
+            "Comma-separated booleans controlling whether to read a response "
+            "after each HCNetSDK command frame (default: read after every frame)."
+        ),
+    )
+    parser_save_clip.add_argument(
+        "--client-type",
+        type=int,
+        default=9,
+        help="VTM client type for --source cloud (default: 9)",
+    )
+    parser_save_clip.add_argument(
+        "--token-index",
+        type=int,
+        default=0,
+        help="VTDU token index for --source cloud (default: 0)",
+    )
+    parser_save_clip.add_argument(
+        "--no-refresh-vtm",
+        action="store_true",
+        help="Use pagelist VTM metadata without refreshing it for --source cloud",
+    )
+
+    parser_save_image = subparsers_save.add_parser(
+        "image",
+        help="Capture or download a camera image to a local file",
+    )
+    parser_save_image.add_argument("--serial", required=True, help="camera SERIAL")
+    parser_save_image.add_argument(
+        "--channel",
+        type=int,
+        default=1,
+        help="Camera channel number (default: 1)",
+    )
+    parser_save_image.add_argument(
+        "--output",
+        required=True,
+        help="Local output path for the image",
+    )
+    parser_save_image.add_argument(
+        "--image-url",
+        help="Download this existing EZVIZ image URL instead of triggering capture",
+    )
+    parser_save_image.add_argument(
+        "--no-decrypt",
+        action="store_true",
+        help="Write encrypted image bytes as-is instead of decrypting when needed",
+    )
+    parser_save_image.add_argument(
+        "--sms-code",
+        help="Optional MFA/elevation code for encrypted image key retrieval",
     )
 
     parser_stream = subparsers.add_parser(
@@ -709,16 +1055,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=(
             "auto",
             "hevc",
+            "hevc-encrypted-header",
             "h264",
             "h264-clear-header",
             "h264-encrypted-header",
+            "encrypted-header",
         ),
         default="auto",
         help=(
             "Video codec transform for --decrypt-video: auto detects the NAL header "
             "mode; hevc preserves the two-byte "
             "HEVC NAL header; h264/h264-clear-header preserve the one-byte H.264 "
-            "NAL header; h264-encrypted-header decrypts the H.264 NAL header too "
+            "NAL header; encrypted-header/hevc-encrypted-header decrypts the "
+            "codec header too "
             "(default: auto)"
         ),
     )
@@ -795,16 +1144,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=(
             "auto",
             "hevc",
+            "hevc-encrypted-header",
             "h264",
             "h264-clear-header",
             "h264-encrypted-header",
+            "encrypted-header",
         ),
         default="auto",
         help=(
             "Video codec transform for --decrypt-video: auto detects the NAL header "
             "mode; hevc preserves the two-byte "
             "HEVC NAL header; h264/h264-clear-header preserve the one-byte H.264 "
-            "NAL header; h264-encrypted-header decrypts the H.264 NAL header too "
+            "NAL header; encrypted-header/hevc-encrypted-header decrypts the "
+            "codec header too "
             "(default: auto)"
         ),
     )
@@ -814,12 +1166,393 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Stop each HTTP stream after this many packets (default: unlimited)",
     )
+    parser_stream_local_dump = subparsers_stream.add_parser(
+        "local-sdk-dump",
+        help="Dump the direct-local 9010/9020 SDK stream with caller-supplied fields",
+    )
+    parser_stream_local_dump.add_argument("--host", help="camera LAN address")
+    parser_stream_local_dump.add_argument("--serial", help="device serial")
+    parser_stream_local_dump.add_argument(
+        "--credentials-file",
+        help=(
+            "JSON file produced by local-sdk-keys; supplies serial, endpoint, "
+            "CAS tuple, and optional media key"
+        ),
+    )
+    parser_stream_local_dump.add_argument("--command-port", type=int)
+    parser_stream_local_dump.add_argument("--stream-port", type=int)
+    parser_stream_local_dump.add_argument("--channel", type=int, default=1)
+    parser_stream_local_dump.add_argument(
+        "--operation-code",
+        help="CAS operation code, or EZVIZ_LOCAL_OPERATION_CODE",
+    )
+    parser_stream_local_dump.add_argument(
+        "--cas-key",
+        help="CAS local-control key, or EZVIZ_LOCAL_CAS_KEY",
+    )
+    parser_stream_local_dump.add_argument(
+        "--fetch-cas",
+        action="store_true",
+        help=(
+            "Fetch operation-code/cas-key from authenticated EZVIZ CAS instead "
+            "of requiring --operation-code/--cas-key"
+        ),
+    )
+    parser_stream_local_dump.add_argument(
+        "--cas-serial",
+        help=(
+            "Device serial to send to cloud CAS when --fetch-cas is used "
+            "(default: --serial)"
+        ),
+    )
+    parser_stream_local_dump.add_argument("--encrypt-type", type=int, default=1)
+    parser_stream_local_dump.add_argument("--uuid", help="or EZVIZ_LOCAL_UUID")
+    parser_stream_local_dump.add_argument("--timestamp", help="or EZVIZ_LOCAL_TIMESTAMP")
+    parser_stream_local_dump.add_argument("--identifier")
+    parser_stream_local_dump.add_argument("--nat-address", default="")
+    parser_stream_local_dump.add_argument("--nat-port", type=int, default=0)
+    parser_stream_local_dump.add_argument("--upnp-address", default="")
+    parser_stream_local_dump.add_argument("--upnp-port", type=int, default=0)
+    parser_stream_local_dump.add_argument("--inner-address", default="")
+    parser_stream_local_dump.add_argument("--inner-port", type=int, default=0)
+    parser_stream_local_dump.add_argument(
+        "--receiver-shape",
+        choices=("app", "structured"),
+        default="app",
+        help=(
+            "Preview ReceiverInfo XML shape: app attributes from live EZVIZ "
+            "traces, or nested structured fields (default: app)"
+        ),
+    )
+    parser_stream_local_dump.add_argument("--receiver-stream-type", default="MAIN")
+    parser_stream_local_dump.add_argument("--receiver-port", type=int, default=10101)
+    parser_stream_local_dump.add_argument("--receiver-server-type", type=int, default=1)
+    parser_stream_local_dump.add_argument("--receiver-new-stream-type", type=int, default=1)
+    parser_stream_local_dump.add_argument("--receiver-trans-proto", default="TCP")
+    parser_stream_local_dump.add_argument("--receiver-ex-port", type=int, default=10101)
+    parser_stream_local_dump.add_argument("--auth-biz-code", default="biz=1")
+    parser_stream_local_dump.add_argument("--auth-interval", type=int, default=180)
+    parser_stream_local_dump.add_argument(
+        "--is-encrypt",
+        default="TRUE",
+        help="Preview IsEncrypt value (default: TRUE, matching the app local path)",
+    )
+    parser_stream_local_dump.add_argument("--udt", type=int)
+    parser_stream_local_dump.add_argument("--nat", type=int)
+    parser_stream_local_dump.add_argument("--port-guess-type", type=int)
+    parser_stream_local_dump.add_argument("--setup-timeout", type=int)
+    parser_stream_local_dump.add_argument("--heartbeat-interval", type=int)
+    parser_stream_local_dump.add_argument(
+        "--pre-start-body-file",
+        help="Optional file containing caller-owned 0x2013 pre-start body bytes",
+    )
+    parser_stream_local_dump.add_argument("--pre-start-sequence", type=int, default=27)
+    parser_stream_local_dump.add_argument("--preview-sequence", type=int, default=28)
+    parser_stream_local_dump.add_argument("--stream-sequence", type=int, default=29)
+    parser_stream_local_dump.add_argument("--stream-rate", default=1)
+    parser_stream_local_dump.add_argument("--stream-mode", default=-1)
+    parser_stream_local_dump.add_argument(
+        "--duration",
+        type=_parse_duration_seconds,
+        default=60.0,
+        help="Stop after this capture duration (default: 1m, use 0 for unlimited)",
+    )
+    parser_stream_local_dump.add_argument(
+        "--max-packets",
+        type=int,
+        default=None,
+        help="Stop after this many local RTP packets (default: duration only)",
+    )
+    parser_stream_local_dump.add_argument(
+        "--socket-timeout",
+        type=float,
+        default=10.0,
+        help="Socket timeout in seconds (default: 10)",
+    )
+    parser_stream_local_dump.add_argument(
+        "--max-prefix-bytes",
+        type=int,
+        default=4096,
+        help="Maximum non-RTP preface bytes to tolerate before first media",
+    )
+    parser_stream_local_dump.add_argument(
+        "--output",
+        default="-",
+        help="Output file for stream bytes, or '-' for stdout (default: -)",
+    )
+    parser_stream_local_dump.add_argument(
+        "--metadata-output",
+        help=(
+            "Optional JSON file for non-secret local-SDK response metadata "
+            "(commands, statuses, body shapes, and first-media shape)"
+        ),
+    )
+    parser_stream_local_dump.add_argument(
+        "--format",
+        choices=("mpegps", "mpegts"),
+        default="mpegts",
+        help="Output container: raw MPEG-PS payloads or remuxed MPEG-TS (default: mpegts)",
+    )
+    parser_stream_local_dump.add_argument(
+        "--ffmpeg-path",
+        default="ffmpeg",
+        help="FFmpeg executable to use for MPEG-TS remuxing (default: ffmpeg)",
+    )
+    parser_stream_local_dump.add_argument(
+        "--decrypt-video",
+        action="store_true",
+        help=(
+            "Decrypt Hikvision/EZVIZ encrypted video NAL payloads before "
+            "writing/remuxing. The media key can come from --media-key, "
+            "--media-key-hex, EZVIZ_LOCAL_MEDIA_KEY, "
+            "EZVIZ_LOCAL_MEDIA_KEY_HEX, --credentials-file, or the "
+            "authenticated client."
+        ),
+    )
+    parser_stream_local_dump.add_argument(
+        "--decrypt-codec",
+        choices=(
+            "auto",
+            "hevc",
+            "hevc-encrypted-header",
+            "h264",
+            "h264-clear-header",
+            "h264-encrypted-header",
+            "encrypted-header",
+        ),
+        default="auto",
+        help=(
+            "Video codec transform for --decrypt-video: auto detects the NAL header "
+            "mode; use hevc-encrypted-header/encrypted-header for the observed "
+            "local-SDK encrypted-header path "
+            "(default: auto)"
+        ),
+    )
+    parser_stream_local_dump.add_argument(
+        "--media-key",
+        help=(
+            "Camera media decrypt key, or EZVIZ_LOCAL_MEDIA_KEY. This is distinct "
+            "from --cas-key, which only protects the local-SDK control channel."
+        ),
+    )
+    parser_stream_local_dump.add_argument(
+        "--media-key-hex",
+        help=(
+            "Hex-encoded binary media decrypt key, or EZVIZ_LOCAL_MEDIA_KEY_HEX. "
+            "Use this when the native local media key is not printable text."
+        ),
+    )
+    parser_stream_local_keys = subparsers_stream.add_parser(
+        "local-sdk-keys",
+        help="Fetch direct-local LAN endpoint, CAS tuple and media decrypt key",
+    )
+    parser_stream_local_keys.add_argument("--serial", required=True, help="device serial")
+    parser_stream_local_keys.add_argument(
+        "--cas-serial",
+        help="Device serial to send to cloud CAS (default: --serial)",
+    )
+    parser_stream_local_keys.add_argument(
+        "--no-media-key",
+        action="store_true",
+        help="Only fetch the LAN endpoint and CAS tuple",
+    )
+    parser_stream_local_keys.add_argument(
+        "--sms-code",
+        help="Optional MFA/elevation code for camera media key retrieval",
+    )
+    parser_stream_h264_summary = subparsers_stream.add_parser(
+        "h264-annexb-summary",
+        help="Summarize a local H.264 Annex-B file without printing media bytes",
+    )
+    parser_stream_h264_summary.add_argument(
+        "--input",
+        required=True,
+        help="Input .h264 Annex-B elementary stream",
+    )
+    parser_stream_h264_summary.add_argument(
+        "--max-units",
+        type=int,
+        default=64,
+        help="Maximum NAL-unit samples to include (default: 64)",
+    )
+    parser_stream_h264_summary.add_argument(
+        "--max-idr-windows",
+        type=int,
+        default=16,
+        help="Maximum IDR-window samples to include (default: 16)",
+    )
+    parser_stream_h264_summary.add_argument(
+        "--decode-idr-windows",
+        action="store_true",
+        help="Run ffmpeg decode checks for each sampled IDR-started window",
+    )
+    parser_stream_h264_summary.add_argument(
+        "--ffmpeg-path",
+        default="ffmpeg",
+        help="FFmpeg executable for --decode-idr-windows (default: ffmpeg)",
+    )
+    parser_stream_command_dump_summary = subparsers_stream.add_parser(
+        "hcnetsdk-command-dump-summary",
+        help="Summarize offline HCNetSDK command-port Frida dump files",
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--command-frame-dir",
+        help="Directory containing ezviz-hcnetsdk-command-frame-*.bin dumps",
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--inbound-media-file",
+        help="Raw ezviz-hcnetsdk-inbound-media-*.bin dump to scan for $ media frames",
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--playm4-input-dir",
+        help="Directory containing *-playm4-input-*.bin dumps from the transform hook",
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--native-annexb-dir",
+        help=(
+            "Directory containing native Frida Annex-B dumps, such as "
+            "*-playctrl-idmx-aes-frame-after-*.bin"
+        ),
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--native-annexb-label",
+        default="playctrl-idmx-aes-frame-after",
+        help=(
+            "Native Annex-B dump label to summarize with --native-annexb-dir "
+            "(default: playctrl-idmx-aes-frame-after)"
+        ),
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--native-annexb-codec",
+        choices=("auto", "h264", "hevc"),
+        default="auto",
+        help="Codec for --native-annexb-dir decode-window checks (default: auto)",
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--max-frames",
+        type=int,
+        default=64,
+        help="Maximum command/media samples to include (default: 64)",
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--decode-idr-windows",
+        action="store_true",
+        help=(
+            "Run ffmpeg decode checks for reconstructed H.264 IDR or HEVC IRAP "
+            "windows from inbound media and PlayM4 input dumps"
+        ),
+    )
+    parser_stream_command_dump_summary.add_argument(
+        "--ffmpeg-path",
+        default="ffmpeg",
+        help="FFmpeg executable for --decode-idr-windows (default: ffmpeg)",
+    )
+    parser_stream_plan_generate = subparsers_stream.add_parser(
+        "hcnetsdk-command-plan-generate",
+        help="Convert a concrete HCNetSDK command-port socket plan to generated JSON",
+    )
+    parser_stream_plan_generate.add_argument(
+        "--input",
+        required=True,
+        help="Concrete command plan JSON file accepted by save clip --hcnetsdk-command-plan-file",
+    )
+    parser_stream_plan_generate.add_argument(
+        "--output",
+        default="-",
+        help="Generated command-plan JSON output file, or '-' for stdout (default: -)",
+    )
+    parser_stream_plan_generate.add_argument(
+        "--auth-seed",
+        help=(
+            "Optional login auth seed from the concrete capture. With --key-hex, "
+            "this infers session-relative addend_delta values."
+        ),
+    )
+    parser_stream_plan_generate.add_argument(
+        "--key-hex",
+        help=(
+            "Optional command auth key/challenge hex from the concrete capture. "
+            "Use only with owned diagnostic captures."
+        ),
+    )
 
     return parser.parse_args(argv)
 
 
-def _login(client: EzvizClient) -> None:
-    """Login if credentials are configured; skip when only a token is used."""
+def _token_has_service_urls(token: dict[str, Any] | None) -> bool:
+    """Return True when a saved token carries the CAS sysConf endpoint metadata."""
+
+    service_urls = token.get("service_urls") if token else None
+    if not isinstance(service_urls, dict):
+        return False
+    sys_conf = service_urls.get("sysConf")
+    return (
+        isinstance(sys_conf, (list, tuple))
+        and len(sys_conf) > 16
+        and bool(sys_conf[15])
+        and bool(sys_conf[16])
+    )
+
+
+def _token_has_refresh_session(token: dict[str, Any] | None) -> bool:
+    """Return True when a saved token can refresh itself without credentials."""
+
+    return bool(
+        token
+        and token.get("session_id")
+        and token.get("rf_session_id")
+        and token.get("api_url")
+    )
+
+
+def _action_requires_service_urls(args: argparse.Namespace) -> bool:
+    """Return True when the selected CLI path needs CAS service metadata."""
+
+    return bool(
+        (
+            args.action == "stream"
+            and (
+                args.stream_action == "local-sdk-keys"
+                or (args.stream_action == "local-sdk-dump" and args.fetch_cas)
+            )
+        )
+        or (
+            args.action == "save"
+            and getattr(args, "save_action", None) == "clip"
+            and getattr(args, "source", None) == "local-sdk"
+        )
+    )
+
+
+def _ensure_client_service_urls(client: EzvizClient) -> None:
+    """Refresh the client's token service metadata for CAS-only CLI paths."""
+
+    token = client.export_token()
+    if _token_has_service_urls(token):
+        return
+    service_urls = client.get_service_urls()
+    if hasattr(client, "_token"):
+        client._token["service_urls"] = service_urls  # noqa: SLF001
+    if hasattr(client, "exported_token"):
+        cast(Any, client).exported_token["service_urls"] = service_urls
+
+
+def _login(
+    client: EzvizClient,
+    token: dict[str, Any] | None = None,
+    *,
+    require_service_urls: bool = False,
+) -> None:
+    """Login only when the saved token cannot satisfy the selected action."""
+    if token and token.get("session_id") and (
+        not require_service_urls or _token_has_service_urls(token)
+    ):
+        return
+
+    if not (client.account and client.password) and not _token_has_refresh_session(token):
+        return
+
+    logged_in = False
     if client.account and client.password:
         try:
             client.login()
@@ -830,6 +1563,13 @@ def _login(client: EzvizClient) -> None:
             except ValueError:
                 code_int = None
             client.login(sms_code=code_int)
+        logged_in = True
+
+    if not logged_in:
+        client.login()
+
+    if require_service_urls:
+        _ensure_client_service_urls(client)
 
 
 def _write_json(obj: Any) -> None:
@@ -1435,6 +2175,710 @@ def _handle_cloud_video_decrypt(
     return 0
 
 
+def _write_save_result(args: argparse.Namespace, result: Mapping[str, Any]) -> None:
+    """Write a human or JSON result for save commands."""
+
+    if args.json:
+        _write_json(result)
+    else:
+        sys.stdout.write(f"Wrote {result['bytes']} bytes to {result['output']}\n")
+
+
+def _handle_save_clip(args: argparse.Namespace, client: EzvizClient) -> int:
+    """Save a short direct-local camera clip to disk."""
+
+    command_generated_plan = (
+        _hcnetsdk_command_generated_plan_from_args(args)
+        if args.source == "hcnetsdk-command-port"
+        else None
+    )
+    command_plan = (
+        _hcnetsdk_command_plan_from_args(args)
+        if args.source == "hcnetsdk-command-port"
+        else None
+    )
+    command_frames = (
+        _hcnetsdk_command_frames_from_args(args)
+        if (
+            args.source == "hcnetsdk-command-port"
+            and command_plan is None
+            and command_generated_plan is None
+        )
+        else None
+    )
+    read_response_after_each = (
+        _hcnetsdk_read_response_policy(args, len(command_frames or ()))
+        if command_frames is not None
+        else True
+    )
+    hcnetsdk_command_metadata_callback = (
+        (
+            lambda stream: _write_local_sdk_metadata_output(
+                args.hcnetsdk_command_metadata_output,
+                stream,
+                packet_output_path=args.hcnetsdk_command_sampled_packets_output,
+            )
+        )
+        if (
+            args.source == "hcnetsdk-command-port"
+            and (
+                args.hcnetsdk_command_metadata_output
+                or args.hcnetsdk_command_sampled_packets_output
+            )
+        )
+        else None
+    )
+    save_kwargs: dict[str, Any] = {
+        "source": args.source,
+        "output_format": args.format,
+        "duration_seconds": args.duration,
+        "max_packets": args.max_packets,
+        "channel": args.channel,
+        "ffmpeg_path": args.ffmpeg_path,
+        "decrypt_video": args.decrypt_video,
+        "nalu_header_size": _codec_nalu_header_size(args.decrypt_codec),
+        "cas_serial": args.cas_serial,
+        "timeout": args.timeout,
+        "smscode": args.sms_code,
+        "host": args.host,
+        "command_port": args.command_port,
+        "hcnetsdk_command_frames": command_frames,
+        "hcnetsdk_command_plan": command_plan,
+        "hcnetsdk_command_generated_plan": command_generated_plan,
+        "hcnetsdk_command_password": args.hcnetsdk_command_password,
+        "hcnetsdk_local_ip": args.hcnetsdk_local_ip,
+        "hcnetsdk_read_response_after_each": read_response_after_each,
+        "hcnetsdk_command_metadata_callback": hcnetsdk_command_metadata_callback,
+        "hcnetsdk_h264_skip_initial_idr_windows": (
+            args.hcnetsdk_h264_skip_initial_idr_windows
+        ),
+        "hcnetsdk_h264_trim_to_clean_idr_window": (
+            args.hcnetsdk_h264_trim_to_clean_idr_window
+        ),
+        "hcnetsdk_h264_clean_idr_preroll_seconds": (
+            args.hcnetsdk_h264_clean_idr_preroll_seconds
+        ),
+        "hcnetsdk_h264_clean_idr_max_windows": (
+            args.hcnetsdk_h264_clean_idr_max_windows
+        ),
+        "hcnetsdk_h264_wait_for_clean_idr_window": (
+            args.hcnetsdk_h264_wait_for_clean_idr_window
+        ),
+        "hcnetsdk_h264_clean_idr_wait_seconds": (
+            args.hcnetsdk_h264_clean_idr_wait_seconds
+        ),
+    }
+    if args.source == "cloud":
+        save_kwargs.update(
+            {
+                "cloud_client_type": args.client_type,
+                "cloud_token_index": args.token_index,
+                "cloud_refresh_vtm": not args.no_refresh_vtm,
+            }
+        )
+    if args.decrypt_video and (
+        args.source == "hcnetsdk-command-port" or _local_sdk_has_static_media_key(args)
+    ):
+        save_kwargs["media_key"] = _local_sdk_media_key(args, client)
+    result = client.save_clip(args.serial, args.output, **save_kwargs)
+    _write_save_result(args, result)
+    return 0
+
+
+def _hcnetsdk_command_plan_from_args(
+    args: argparse.Namespace,
+) -> HcNetSdkCommandPortMultiSocketPlan | None:
+    """Load a native-style multi-socket command plan from CLI args."""
+
+    plan_file = getattr(args, "hcnetsdk_command_plan_file", None)
+    if not plan_file:
+        return None
+    text = Path(plan_file).read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise PyEzvizError("Invalid HCNetSDK command plan JSON") from err
+    return _hcnetsdk_command_plan_from_json(data)
+
+
+def _hcnetsdk_command_generated_plan_from_args(
+    args: argparse.Namespace,
+) -> HcNetSdkCommandPortGeneratedMultiSocketPlan | None:
+    """Load a generated multi-socket command plan from CLI args."""
+
+    plan_file = getattr(args, "hcnetsdk_command_generated_plan_file", None)
+    native_plan = getattr(args, "hcnetsdk_command_native_plan", None)
+    if plan_file and native_plan:
+        raise PyEzvizError(
+            "Provide only one of --hcnetsdk-command-generated-plan-file or "
+            "--hcnetsdk-command-native-plan"
+        )
+    if native_plan:
+        if getattr(args, "channel", 1) != 1:
+            raise PyEzvizError(
+                "--hcnetsdk-command-native-plan app-lan-live-view currently "
+                "supports only --channel 1 because the app-observed command "
+                "tails contain channel-1 fields"
+            )
+        return hcnetsdk_command_port_native_lan_live_view_plan(native_plan)
+    if not plan_file:
+        return None
+    text = Path(plan_file).read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise PyEzvizError("Invalid HCNetSDK generated command plan JSON") from err
+    return _hcnetsdk_command_generated_plan_from_json(data)
+
+
+def _hcnetsdk_command_plan_from_json(
+    value: Any,
+) -> HcNetSdkCommandPortMultiSocketPlan:
+    """Build a command-port socket plan from simple JSON shapes."""
+
+    raw_steps: list[Any] | None
+    if isinstance(value, list):
+        raw_steps = value
+    elif isinstance(value, dict):
+        raw_steps = None
+        for key in ("socket_plan", "socketPlan", "sockets", "sessions", "steps"):
+            item = value.get(key)
+            if isinstance(item, list):
+                raw_steps = item
+                break
+        if raw_steps is None:
+            raise PyEzvizError("HCNetSDK command plan JSON is missing socket steps")
+    else:
+        raise PyEzvizError("HCNetSDK command plan JSON must be an object or list")
+
+    steps = tuple(_hcnetsdk_command_plan_step_from_json(item) for item in raw_steps)
+    return HcNetSdkCommandPortMultiSocketPlan(steps=steps)
+
+
+def _hcnetsdk_command_generated_plan_from_json(
+    value: Any,
+) -> HcNetSdkCommandPortGeneratedMultiSocketPlan:
+    """Build a generated command-port socket plan from JSON."""
+
+    raw_steps = _hcnetsdk_command_plan_raw_steps(value)
+    steps = tuple(
+        _hcnetsdk_command_generated_plan_step_from_json(item) for item in raw_steps
+    )
+    return HcNetSdkCommandPortGeneratedMultiSocketPlan(steps=steps)
+
+
+def _hcnetsdk_command_plan_raw_steps(value: Any) -> list[Any]:
+    """Return raw socket step objects from concrete or generated JSON."""
+
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in ("socket_plan", "socketPlan", "sockets", "sessions", "steps"):
+            item = value.get(key)
+            if isinstance(item, list):
+                return item
+        raise PyEzvizError("HCNetSDK command plan JSON is missing socket steps")
+    raise PyEzvizError("HCNetSDK command plan JSON must be an object or list")
+
+
+def _hcnetsdk_command_plan_step_from_json(
+    value: Any,
+) -> HcNetSdkCommandPortSocketStep:
+    """Build one socket step from a JSON object."""
+
+    if not isinstance(value, dict):
+        raise PyEzvizError("HCNetSDK command plan step must be an object")
+    frames = _hcnetsdk_command_plan_frames_from_json(
+        value,
+        ("command_frames", "commandFrames", "frames"),
+    )
+    keepalive_frames = _hcnetsdk_command_plan_frames_from_json(
+        value,
+        ("keepalive_frames", "keepaliveFrames"),
+        required=False,
+    )
+    media_socket = _hcnetsdk_command_plan_media_socket(value)
+    read_policy = _hcnetsdk_command_plan_read_policy(
+        value,
+        default=not media_socket,
+    )
+    response_reads = _hcnetsdk_command_plan_response_reads(value)
+    read_first_media_immediately = _hcnetsdk_command_plan_immediate_media_read(value)
+    delay_after_commands = _hcnetsdk_command_plan_delay_after_commands(value)
+    drain_media_before_next = _hcnetsdk_command_plan_drain_media_before_next(value)
+    interval = value.get("keepalive_interval_seconds")
+    if interval is None:
+        interval = value.get("keepaliveIntervalSeconds", 5.0)
+    initial_delay = value.get("keepalive_initial_delay_seconds")
+    if initial_delay is None:
+        initial_delay = value.get("keepaliveInitialDelaySeconds")
+    name = value.get("name")
+    return HcNetSdkCommandPortSocketStep(
+        command_frames=frames,
+        read_response_after_each=read_policy,
+        response_reads_after_each=response_reads,
+        media_socket=media_socket,
+        read_first_media_immediately=read_first_media_immediately,
+        delay_after_commands_seconds=delay_after_commands,
+        drain_media_before_next_step_seconds=drain_media_before_next,
+        keepalive_frames=keepalive_frames,
+        keepalive_interval_seconds=float(interval),
+        keepalive_initial_delay_seconds=(
+            None if initial_delay is None else float(initial_delay)
+        ),
+        name=name if isinstance(name, str) else None,
+    )
+
+
+def _hcnetsdk_command_generated_plan_step_from_json(
+    value: Any,
+) -> HcNetSdkCommandPortGeneratedSocketStep:
+    """Build one generated socket step from a JSON object."""
+
+    if not isinstance(value, dict):
+        raise PyEzvizError("HCNetSDK generated command plan step must be an object")
+    templates = _hcnetsdk_command_plan_templates_from_json(
+        value,
+        ("control_templates", "controlTemplates", "templates", "commands"),
+    )
+    keepalive_templates = _hcnetsdk_command_plan_templates_from_json(
+        value,
+        ("keepalive_templates", "keepaliveTemplates"),
+        required=False,
+    )
+    media_socket = _hcnetsdk_command_plan_media_socket(value)
+    read_policy = _hcnetsdk_command_plan_read_policy(
+        value,
+        default=not media_socket,
+    )
+    response_reads = _hcnetsdk_command_plan_response_reads(value)
+    read_first_media_immediately = _hcnetsdk_command_plan_immediate_media_read(value)
+    delay_after_commands = _hcnetsdk_command_plan_delay_after_commands(value)
+    drain_media_before_next = _hcnetsdk_command_plan_drain_media_before_next(value)
+    interval = value.get("keepalive_interval_seconds")
+    if interval is None:
+        interval = value.get("keepaliveIntervalSeconds", 5.0)
+    initial_delay = value.get("keepalive_initial_delay_seconds")
+    if initial_delay is None:
+        initial_delay = value.get("keepaliveInitialDelaySeconds")
+    name = value.get("name")
+    return HcNetSdkCommandPortGeneratedSocketStep(
+        control_templates=templates,
+        read_response_after_each=read_policy,
+        response_reads_after_each=response_reads,
+        media_socket=media_socket,
+        read_first_media_immediately=read_first_media_immediately,
+        delay_after_commands_seconds=delay_after_commands,
+        drain_media_before_next_step_seconds=drain_media_before_next,
+        keepalive_templates=keepalive_templates,
+        keepalive_interval_seconds=float(interval),
+        keepalive_initial_delay_seconds=(
+            None if initial_delay is None else float(initial_delay)
+        ),
+        name=name if isinstance(name, str) else None,
+    )
+
+
+def _hcnetsdk_command_plan_templates_from_json(
+    value: Mapping[str, Any],
+    keys: tuple[str, ...],
+    *,
+    required: bool = True,
+) -> tuple[HcNetSdkCommandPortControlTemplate, ...]:
+    """Read generated control templates from one command-plan JSON step."""
+
+    for key in keys:
+        item = value.get(key)
+        if item is not None:
+            templates = tuple(
+                _hcnetsdk_command_plan_template_from_json(template)
+                for template in _iter_hcnetsdk_command_template_values(item)
+            )
+            if templates or not required:
+                return templates
+    if required:
+        raise PyEzvizError("HCNetSDK generated command plan step is missing templates")
+    return ()
+
+
+def _iter_hcnetsdk_command_template_values(value: Any) -> Iterator[Any]:
+    """Yield generated command template objects from JSON."""
+
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_hcnetsdk_command_template_values(item)
+        return
+    yield value
+
+
+def _hcnetsdk_command_plan_template_from_json(
+    value: Any,
+) -> HcNetSdkCommandPortControlTemplate:
+    """Build one generated control template from a JSON object."""
+
+    if not isinstance(value, dict):
+        raise PyEzvizError("HCNetSDK generated command template must be an object")
+    command_id = _hcnetsdk_int_required(
+        value,
+        ("command_id", "commandId", "command"),
+        "HCNetSDK generated command template is missing command_id",
+    )
+    body_tail = _hcnetsdk_bytes_from_json(
+        value,
+        ("body_tail", "bodyTail", "body_tail_hex", "bodyTailHex", "tail", "tailHex"),
+    )
+    addend = _hcnetsdk_optional_int(value, ("addend",))
+    addend_delta = _hcnetsdk_optional_int(value, ("addend_delta", "addendDelta"))
+    mask_seed = _hcnetsdk_bytes_from_json(
+        value,
+        ("mask_seed", "maskSeed", "mask_seed_hex", "maskSeedHex"),
+        default=b"\x00" * 6,
+    )
+    body_tail_transform = value.get("body_tail_transform")
+    if body_tail_transform is None:
+        body_tail_transform = value.get("bodyTailTransform")
+    if body_tail_transform is not None and not isinstance(body_tail_transform, str):
+        raise PyEzvizError("HCNetSDK body_tail_transform must be a string")
+    name = value.get("name")
+    return HcNetSdkCommandPortControlTemplate(
+        command_id=command_id,
+        body_tail=body_tail,
+        addend=addend,
+        addend_delta=addend_delta,
+        mask_seed=mask_seed,
+        body_tail_transform=body_tail_transform,
+        name=name if isinstance(name, str) else None,
+    )
+
+
+def _hcnetsdk_int_required(
+    value: Mapping[str, Any],
+    keys: tuple[str, ...],
+    message: str,
+) -> int:
+    """Read a required integer field from a JSON object."""
+
+    for key in keys:
+        if key in value:
+            return _hcnetsdk_int(value[key])
+    raise PyEzvizError(message)
+
+
+def _hcnetsdk_optional_int(
+    value: Mapping[str, Any],
+    keys: tuple[str, ...],
+) -> int | None:
+    """Read an optional integer field from a JSON object."""
+
+    for key in keys:
+        if key in value and value[key] is not None:
+            return _hcnetsdk_int(value[key])
+    return None
+
+
+def _hcnetsdk_bytes_from_json(
+    value: Mapping[str, Any],
+    keys: tuple[str, ...],
+    *,
+    default: bytes = b"",
+) -> bytes:
+    """Read an optional hex byte field from a JSON object."""
+
+    for key in keys:
+        item = value.get(key)
+        if item is None:
+            continue
+        if not isinstance(item, str):
+            raise PyEzvizError("HCNetSDK byte fields must be hex strings")
+        return _bytes_from_hex_value(item)
+    return default
+
+
+def _hcnetsdk_command_plan_frames_from_json(
+    value: Mapping[str, Any],
+    keys: tuple[str, ...],
+    *,
+    required: bool = True,
+) -> tuple[bytes, ...]:
+    """Read a frame list from one command-plan JSON step."""
+
+    for key in keys:
+        item = value.get(key)
+        if item is not None:
+            frames = tuple(
+                _bytes_from_hex_value(frame_hex)
+                for frame_hex in _iter_hcnetsdk_command_frame_hex_values(item)
+            )
+            if frames or not required:
+                return frames
+    if required:
+        raise PyEzvizError("HCNetSDK command plan step is missing frames")
+    return ()
+
+
+def _hcnetsdk_command_plan_read_policy(
+    value: Mapping[str, Any],
+    *,
+    default: bool = True,
+) -> bool | tuple[bool, ...]:
+    """Read the response policy for one command-plan step."""
+
+    raw = value.get("read_response_after_each")
+    if raw is None:
+        raw = value.get("readResponseAfterEach")
+    if raw is None:
+        raw = value.get("read_responses")
+    if raw is None:
+        raw = value.get("readResponses", default)
+    if isinstance(raw, list):
+        return tuple(_hcnetsdk_bool(raw_value) for raw_value in raw)
+    if isinstance(raw, str) and "," in raw:
+        return tuple(
+            _hcnetsdk_bool(part.strip())
+            for part in raw.split(",")
+            if part.strip()
+        )
+    return _hcnetsdk_bool(raw)
+
+
+def _hcnetsdk_command_plan_response_reads(
+    value: Mapping[str, Any],
+) -> int | tuple[int, ...] | None:
+    """Read optional response-frame counts for one command-plan step."""
+
+    raw = value.get("response_reads_after_each")
+    if raw is None:
+        raw = value.get("responseReadsAfterEach")
+    if raw is None:
+        raw = value.get("response_reads")
+    if raw is None:
+        raw = value.get("responseReads")
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return tuple(_hcnetsdk_int(raw_value) for raw_value in raw)
+    if isinstance(raw, str) and "," in raw:
+        return tuple(
+            _hcnetsdk_int(part.strip())
+            for part in raw.split(",")
+            if part.strip()
+        )
+    return _hcnetsdk_int(raw)
+
+
+def _hcnetsdk_command_plan_media_socket(value: Mapping[str, Any]) -> bool:
+    """Return whether a command-plan step is the media socket."""
+
+    for key in ("media_socket", "mediaSocket", "read_media", "readMedia", "media"):
+        raw = value.get(key)
+        if raw is not None:
+            return _hcnetsdk_bool(raw)
+    role = value.get("role")
+    return isinstance(role, str) and role.lower() in {"media", "stream"}
+
+
+def _hcnetsdk_command_plan_immediate_media_read(value: Mapping[str, Any]) -> bool:
+    """Return whether a media step should read first media before later steps."""
+
+    for key in (
+        "read_first_media_immediately",
+        "readFirstMediaImmediately",
+        "read_first_media_before_next_step",
+        "readFirstMediaBeforeNextStep",
+    ):
+        raw = value.get(key)
+        if raw is not None:
+            return _hcnetsdk_bool(raw)
+    return False
+
+
+def _hcnetsdk_command_plan_delay_after_commands(value: Mapping[str, Any]) -> float:
+    """Return optional pacing delay after one command-plan step."""
+
+    for key in (
+        "delay_after_commands_seconds",
+        "delayAfterCommandsSeconds",
+        "delay_after_commands",
+        "delayAfterCommands",
+    ):
+        raw = value.get(key)
+        if raw is not None:
+            delay = float(raw)
+            if delay < 0:
+                raise PyEzvizError("HCNetSDK command step delay must be non-negative")
+            return delay
+    return 0.0
+
+
+def _hcnetsdk_command_plan_drain_media_before_next(value: Mapping[str, Any]) -> float:
+    """Return optional media-drain duration before later command-plan steps."""
+
+    for key in (
+        "drain_media_before_next_step_seconds",
+        "drainMediaBeforeNextStepSeconds",
+        "drain_media_before_next_step",
+        "drainMediaBeforeNextStep",
+    ):
+        raw = value.get(key)
+        if raw is not None:
+            drain = float(raw)
+            if drain < 0:
+                raise PyEzvizError("HCNetSDK command media drain must be non-negative")
+            return drain
+    return 0.0
+
+
+def _hcnetsdk_bool(value: Any) -> bool:
+    """Parse permissive boolean values from CLI JSON."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y"}:
+            return True
+        if normalized in {"0", "false", "no", "n"}:
+            return False
+    raise PyEzvizError("Invalid HCNetSDK boolean value")
+
+
+def _hcnetsdk_int(value: Any) -> int:
+    """Parse non-negative integer values from CLI JSON."""
+
+    if isinstance(value, bool):
+        raise PyEzvizError("Invalid HCNetSDK integer value")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip(), 0)
+        except ValueError as err:
+            with suppress(ValueError):
+                return int(value.strip())
+            raise PyEzvizError("Invalid HCNetSDK integer value") from err
+    raise PyEzvizError("Invalid HCNetSDK integer value")
+
+
+def _hcnetsdk_command_frames_from_args(args: argparse.Namespace) -> tuple[bytes, ...]:
+    """Load complete command-port frames from CLI hex values or a file."""
+
+    frame_hex_values = list(getattr(args, "hcnetsdk_command_frame_hex", []) or [])
+    frames_file = getattr(args, "hcnetsdk_command_frames_file", None)
+    if frames_file:
+        frame_hex_values.extend(_hcnetsdk_command_frame_hex_values_from_file(frames_file))
+    frames = tuple(_bytes_from_hex_value(value) for value in frame_hex_values)
+    if not frames:
+        raise PyEzvizError(
+            "--source hcnetsdk-command-port requires --hcnetsdk-command-frame-hex "
+            "or --hcnetsdk-command-frames-file"
+        )
+    return frames
+
+
+def _hcnetsdk_command_frame_hex_values_from_file(path: str) -> list[str]:
+    """Read command-frame hex values from JSON or text."""
+
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return [
+            line.split("#", 1)[0].strip()
+            for line in text.splitlines()
+            if line.split("#", 1)[0].strip()
+        ]
+    return list(_iter_hcnetsdk_command_frame_hex_values(data))
+
+
+def _iter_hcnetsdk_command_frame_hex_values(value: Any) -> Iterator[str]:
+    """Yield command-frame hex strings from simple JSON shapes."""
+
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_hcnetsdk_command_frame_hex_values(item)
+        return
+    if isinstance(value, dict):
+        for key in (
+            "hex",
+            "frame_hex",
+            "frameHex",
+            "command_frame_hex",
+            "commandFrameHex",
+        ):
+            item = value.get(key)
+            if isinstance(item, str):
+                yield item
+        for key in ("command_frames", "commandFrames", "frames"):
+            item = value.get(key)
+            if isinstance(item, list):
+                yield from _iter_hcnetsdk_command_frame_hex_values(item)
+
+
+def _bytes_from_hex_value(value: str) -> bytes:
+    """Decode a user-supplied hex byte string."""
+
+    normalized = value.strip().replace(" ", "").replace(":", "").replace("-", "")
+    if normalized.startswith(("0x", "0X")):
+        normalized = normalized[2:]
+    try:
+        return bytes.fromhex(normalized)
+    except ValueError as err:
+        raise PyEzvizError("Invalid HCNetSDK command frame hex") from err
+
+
+def _hcnetsdk_read_response_policy(
+    args: argparse.Namespace,
+    frame_count: int,
+) -> bool | tuple[bool, ...]:
+    """Return response-read policy for command-port bootstrapping."""
+
+    value = getattr(args, "hcnetsdk_read_responses", None)
+    if not value:
+        return True
+    parts = [part.strip().lower() for part in value.split(",") if part.strip()]
+    flags = tuple(part in {"1", "true", "yes", "y"} for part in parts)
+    if len(flags) != frame_count:
+        raise PyEzvizError(
+            "--hcnetsdk-read-responses must include one boolean per command frame"
+        )
+    valid_values = {"1", "0", "true", "false", "yes", "no", "y", "n"}
+    unknown = [part for part in parts if part not in valid_values]
+    if unknown:
+        raise PyEzvizError("Invalid --hcnetsdk-read-responses value")
+    return flags
+
+
+def _handle_save_image(args: argparse.Namespace, client: EzvizClient) -> int:
+    """Save a camera image to disk, triggering capture when no URL is supplied."""
+
+    result = client.save_image(
+        args.serial,
+        args.output,
+        channel=args.channel,
+        image_url=args.image_url,
+        decrypt=not args.no_decrypt,
+        smscode=args.sms_code,
+    )
+    _write_save_result(args, result)
+    return 0
+
+
+def _handle_save(args: argparse.Namespace, client: EzvizClient) -> int:
+    """Handle person-friendly local save commands."""
+
+    if args.save_action == "clip":
+        return _handle_save_clip(args, client)
+    if args.save_action == "image":
+        return _handle_save_image(args, client)
+    _LOGGER.error("Action not implemented, try running with -h switch for help")
+    return 2
+
+
 def _handle_light(args: argparse.Namespace, client: EzvizClient) -> int:
     """Handle `light` subcommands (toggle/status)."""
     light_bulb = EzvizLightBulb(client, args.serial)
@@ -1530,6 +2974,242 @@ def _collect_stream_payloads(
     return output.getvalue()
 
 
+def _collect_stream_packets(
+    stream: Any,
+    *,
+    max_packets: int | None,
+    duration_seconds: float | None = None,
+    allow_encrypted: bool,
+    monotonic: Any = time.monotonic,
+) -> list[Any]:
+    """Collect VTM stream packets while preserving packet boundaries."""
+
+    packets: list[Any] = []
+    deadline = None
+    if duration_seconds is not None:
+        deadline = monotonic() + duration_seconds
+
+    try:
+        for packet in stream.iter_packets(max_packets=max_packets):
+            if deadline is not None and monotonic() >= deadline:
+                break
+            if packet.encrypted and not allow_encrypted:
+                raise PyEzvizError(
+                    "Received encrypted VTM stream packet; media decryption is not implemented"
+                )
+            packets.append(packet)
+    except PyEzvizError as err:
+        if not packets or "VTM socket closed" not in str(err):
+            raise
+        _LOGGER.warning("%s; using partial captured stream", err)
+    return packets
+
+
+def _detect_stream_packets_transport(packets: list[Any]) -> StreamTransport:
+    """Return the first known media transport from collected VTM packets."""
+
+    for packet in packets:
+        transport = detect_transport(packet.body)
+        if transport != StreamTransport.UNKNOWN:
+            return transport
+    return StreamTransport.UNKNOWN
+
+
+def _rtp_payload_video_codec(payload: bytes) -> str | None:
+    """Best-effort codec detection for EZVIZ RTP video payloads."""
+
+    if len(payload) < 2:
+        return None
+    h264_type = payload[0] & 0x1F
+    hevc_type = (payload[0] >> 1) & 0x3F
+    if hevc_type in {48, 49} and _is_plausible_hevc_rtp_header(payload):
+        return "hevc"
+    if 1 <= h264_type <= 5:
+        return "h264"
+    if hevc_type in {32, 33, 34, 39, 40}:
+        return "hevc"
+    if h264_type in {7, 8, 24, 28}:
+        return "h264"
+    return None
+
+
+def _is_plausible_hevc_rtp_header(payload: bytes) -> bool:
+    """Return True when the RTP payload begins with a plausible HEVC NAL header."""
+
+    if len(payload) < 2:
+        return False
+    forbidden_zero = payload[0] & 0x80 == 0
+    layer_id = ((payload[0] & 0x01) << 5) | (payload[1] >> 3)
+    temporal_id_plus1 = payload[1] & 0x07
+    nal_type = (payload[0] >> 1) & 0x3F
+    return forbidden_zero and layer_id == 0 and temporal_id_plus1 > 0 and nal_type <= 49
+
+
+def _detect_rtp_video_codec(packets: list[Any]) -> str:
+    """Detect whether RTP stream packets carry HEVC or H.264 video."""
+
+    fallback: str | None = None
+    for packet in packets:
+        try:
+            payload = rtp_payload(packet.body)
+        except PyEzvizError:
+            continue
+        codec = _rtp_payload_video_codec(payload)
+        if codec in {"hevc", "h264"}:
+            return codec
+        if len(payload) >= 2 and fallback is None:
+            hevc_type = (payload[0] >> 1) & 0x3F
+            h264_type = payload[0] & 0x1F
+            if 0 <= hevc_type <= 50:
+                fallback = "hevc"
+            elif 1 <= h264_type <= 23:
+                fallback = "h264"
+    if fallback:
+        return fallback
+    raise PyEzvizError("Could not detect RTP video codec")
+
+
+def _rtp_packets_to_annexb(packets: list[Any], *, codec: str) -> bytes:
+    """Convert RTP HEVC/H.264 packets to Annex B elementary-stream bytes."""
+
+    output = bytearray()
+    fragmented_nal = bytearray()
+    in_fragment = False
+
+    def append_nal(nal: bytes) -> None:
+        if nal:
+            output.extend(b"\x00\x00\x00\x01")
+            output.extend(nal)
+
+    for packet in packets:
+        payload = rtp_payload(packet.body)
+        if codec == "hevc":
+            if len(payload) < 2:
+                continue
+            nal_type = (payload[0] >> 1) & 0x3F
+            if nal_type == 48:
+                # Aggregation packet. The streams observed here do not include DONL.
+                offset = 2
+                while offset + 2 <= len(payload):
+                    nal_size = int.from_bytes(payload[offset : offset + 2], "big")
+                    offset += 2
+                    if nal_size <= 0 or offset + nal_size > len(payload):
+                        break
+                    append_nal(payload[offset : offset + nal_size])
+                    offset += nal_size
+                in_fragment = False
+                fragmented_nal.clear()
+            elif nal_type == 49 and len(payload) >= 3:
+                fu_header = payload[2]
+                starts_fragment = bool(fu_header & 0x80)
+                ends_fragment = bool(fu_header & 0x40)
+                original_type = fu_header & 0x3F
+                if starts_fragment:
+                    fragmented_nal = bytearray()
+                    fragmented_nal.append((payload[0] & 0x81) | (original_type << 1))
+                    fragmented_nal.append(payload[1])
+                    fragmented_nal.extend(payload[3:])
+                    in_fragment = True
+                    if ends_fragment:
+                        append_nal(bytes(fragmented_nal))
+                        fragmented_nal.clear()
+                        in_fragment = False
+                elif in_fragment:
+                    fragmented_nal.extend(payload[3:])
+                    if ends_fragment:
+                        append_nal(bytes(fragmented_nal))
+                        fragmented_nal.clear()
+                        in_fragment = False
+            else:
+                append_nal(payload)
+                in_fragment = False
+                fragmented_nal.clear()
+            continue
+
+        if codec == "h264":
+            nal_type = payload[0] & 0x1F if payload else 0
+            if 1 <= nal_type <= 23:
+                append_nal(payload)
+                in_fragment = False
+                fragmented_nal.clear()
+            elif nal_type == 24:
+                offset = 1
+                while offset + 2 <= len(payload):
+                    nal_size = int.from_bytes(payload[offset : offset + 2], "big")
+                    offset += 2
+                    if nal_size <= 0 or offset + nal_size > len(payload):
+                        break
+                    append_nal(payload[offset : offset + nal_size])
+                    offset += nal_size
+                in_fragment = False
+                fragmented_nal.clear()
+            elif nal_type == 28 and len(payload) >= 2:
+                fu_indicator = payload[0]
+                fu_header = payload[1]
+                starts_fragment = bool(fu_header & 0x80)
+                ends_fragment = bool(fu_header & 0x40)
+                original_type = fu_header & 0x1F
+                if starts_fragment:
+                    fragmented_nal = bytearray([(fu_indicator & 0xE0) | original_type])
+                    fragmented_nal.extend(payload[2:])
+                    in_fragment = True
+                    if ends_fragment:
+                        append_nal(bytes(fragmented_nal))
+                        fragmented_nal.clear()
+                        in_fragment = False
+                elif in_fragment:
+                    fragmented_nal.extend(payload[2:])
+                    if ends_fragment:
+                        append_nal(bytes(fragmented_nal))
+                        fragmented_nal.clear()
+                        in_fragment = False
+            continue
+
+        raise PyEzvizError(f"Unsupported RTP video codec: {codec}")
+
+    return bytes(output)
+
+
+def _decrypt_annexb_video_bytes(
+    client: EzvizClient,
+    serial: str,
+    data: bytes,
+    *,
+    codec: str,
+) -> bytes:
+    """Decrypt Annex B video NAL payload bytes using the MPEG-PS transform."""
+
+    key = client.get_cam_key(serial, max_retries=1)
+    if not key:
+        raise PyEzvizError("Could not get camera encryption key")
+    header_size = _codec_nalu_header_size(codec)
+    if header_size is None:
+        header_size = 2 if codec == "hevc" else 1
+    video_pes = b"\x00\x00\x01\xe0\x00\x00\x80\x00\x00" + data
+    return decrypt_hikvision_ps_video(
+        video_pes,
+        str(key),
+        nalu_header_size=header_size,
+    )[9:]
+
+
+def _remux_elementary_video_bytes_to_mpegts(
+    data: bytes,
+    output: BinaryIO,
+    *,
+    ffmpeg_path: str,
+    codec: str,
+) -> None:
+    """Remux Annex B HEVC/H.264 elementary stream bytes to MPEG-TS."""
+
+    process = _open_mpegts_remux_process(ffmpeg_path, input_format=codec)
+    stdout, _stderr = process.communicate(data)
+    if process.returncode != 0:
+        raise PyEzvizError(f"FFmpeg exited with status {process.returncode}")
+    output.write(stdout)
+    output.flush()
+
+
 def _decrypt_stream_payload_bytes(
     client: EzvizClient,
     serial: str,
@@ -1558,6 +3238,8 @@ def _codec_nalu_header_size(codec: str) -> int | None:
         return 2
     if codec in {"h264", "h264-clear-header"}:
         return 1
+    if codec in {"hevc-encrypted-header", "h264-encrypted-header", "encrypted-header"}:
+        return 0
     return 0
 
 
@@ -1660,7 +3342,11 @@ def _remux_stream_payloads_to_mpegts(
     )
 
 
-def _open_mpegts_remux_process(ffmpeg_path: str) -> subprocess.Popen[bytes]:
+def _open_mpegts_remux_process(
+    ffmpeg_path: str,
+    *,
+    input_format: str = "mpeg",
+) -> subprocess.Popen[bytes]:
     """Open an FFmpeg process ready to remux MPEG-PS stdin to MPEG-TS stdout."""
 
     try:
@@ -1671,7 +3357,7 @@ def _open_mpegts_remux_process(ffmpeg_path: str) -> subprocess.Popen[bytes]:
                 "-loglevel",
                 "error",
                 "-f",
-                "mpeg",
+                input_format,
                 "-i",
                 "pipe:0",
                 "-c",
@@ -1862,12 +3548,1332 @@ def _serve_stream_proxy(args: argparse.Namespace, client: EzvizClient) -> None:
         server.server_close()
 
 
+def _env_or_arg(args: argparse.Namespace, attr: str, env_name: str) -> str | None:
+    """Return a CLI argument value or matching environment fallback."""
+
+    value = getattr(args, attr, None)
+    if value:
+        return cast(str, value)
+    env_value = os_environ_get(env_name)
+    return env_value if env_value else None
+
+
+def os_environ_get(name: str) -> str | None:
+    """Small wrapper to make environment fallback easy to patch in tests."""
+    return os.environ.get(name)
+
+
+def _required_local_sdk_secret(
+    args: argparse.Namespace,
+    attr: str,
+    env_name: str,
+) -> str:
+    """Read a required local-SDK secret without logging or persisting it."""
+
+    value = _env_or_arg(args, attr, env_name)
+    if not value:
+        raise PyEzvizError(f"Missing --{attr.replace('_', '-')} or {env_name}")
+    return value
+
+
+def _local_sdk_credentials_file(args: argparse.Namespace) -> dict[str, Any]:
+    """Read a local-SDK credential bundle without logging secret values."""
+
+    cached = getattr(args, "_local_sdk_credentials_file_data", None)
+    if isinstance(cached, dict):
+        return cached
+    path = getattr(args, "credentials_file", None)
+    if not path:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as err:
+        raise PyEzvizError(f"Could not read --credentials-file: {err}") from err
+    except json.JSONDecodeError as err:
+        raise PyEzvizError(f"Invalid --credentials-file JSON: {err}") from err
+    if not isinstance(data, dict):
+        raise PyEzvizError("--credentials-file must contain a JSON object")
+    vars(args)["_local_sdk_credentials_file_data"] = data
+    return data
+
+
+def _local_sdk_credentials_value(
+    args: argparse.Namespace,
+    path: tuple[str, ...],
+) -> Any:
+    """Return a value from the optional local-SDK credential bundle."""
+
+    current: Any = _local_sdk_credentials_file(args)
+    for part in path:
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _local_sdk_arg_or_credentials(
+    args: argparse.Namespace,
+    attr: str,
+    path: tuple[str, ...],
+) -> Any:
+    """Return an explicit CLI value or matching credential-bundle value."""
+
+    value = getattr(args, attr, None)
+    if value not in (None, ""):
+        return value
+    return _local_sdk_credentials_value(args, path)
+
+
+def _required_local_sdk_arg_or_credentials(
+    args: argparse.Namespace,
+    attr: str,
+    path: tuple[str, ...],
+) -> Any:
+    """Return a required direct-local field from args or credentials file."""
+
+    value = _local_sdk_arg_or_credentials(args, attr, path)
+    if value in (None, ""):
+        option = attr.replace("_", "-")
+        raise PyEzvizError(
+            f"Missing --{option}; provide it explicitly or via --credentials-file"
+        )
+    return value
+
+
+def _local_sdk_media_key(
+    args: argparse.Namespace,
+    client: EzvizClient | None,
+) -> str | bytes:
+    """Read the direct-local media decrypt key without logging or persisting it."""
+
+    key_hex = _env_or_arg(args, "media_key_hex", "EZVIZ_LOCAL_MEDIA_KEY_HEX")
+    if key_hex:
+        try:
+            return bytes.fromhex(key_hex)
+        except ValueError as err:
+            raise PyEzvizError("Invalid --media-key-hex/EZVIZ_LOCAL_MEDIA_KEY_HEX") from err
+
+    key = _env_or_arg(args, "media_key", "EZVIZ_LOCAL_MEDIA_KEY")
+    if key:
+        return key
+    credential_key_hex = _local_sdk_credentials_value(args, ("media_key_hex",))
+    if credential_key_hex:
+        try:
+            return bytes.fromhex(str(credential_key_hex))
+        except ValueError as err:
+            raise PyEzvizError("Invalid media_key_hex in --credentials-file") from err
+    credential_key = _local_sdk_credentials_value(args, ("media_key",))
+    if credential_key:
+        return str(credential_key)
+    if client is not None:
+        serial = str(
+            _required_local_sdk_arg_or_credentials(args, "serial", ("serial",))
+        )
+        sms_code = getattr(args, "sms_code", None)
+        if sms_code is None:
+            cloud_key = client.get_cam_key(serial, max_retries=1)
+        else:
+            cloud_key = client.get_cam_key(
+                serial,
+                smscode=sms_code,
+                max_retries=1,
+            )
+        if cloud_key:
+            return str(cloud_key)
+    raise PyEzvizError(
+        "Missing media key for --decrypt-video; provide --media-key, "
+        "--media-key-hex, EZVIZ_LOCAL_MEDIA_KEY, EZVIZ_LOCAL_MEDIA_KEY_HEX, "
+        "credentials-file media_key/media_key_hex, or authenticated client access"
+    )
+
+
+def _local_sdk_has_static_media_key(args: argparse.Namespace) -> bool:
+    """Return True when local-sdk-dump can decrypt without cloud key lookup."""
+
+    return bool(
+        _env_or_arg(args, "media_key_hex", "EZVIZ_LOCAL_MEDIA_KEY_HEX")
+        or _env_or_arg(args, "media_key", "EZVIZ_LOCAL_MEDIA_KEY")
+        or _local_sdk_credentials_value(args, ("media_key_hex",))
+        or _local_sdk_credentials_value(args, ("media_key",))
+    )
+
+
+def _read_optional_binary_file(path: str | None) -> bytes | None:
+    """Read an optional caller-owned binary body from disk."""
+
+    if not path:
+        return None
+    return Path(path).read_bytes()
+
+
+def _local_sdk_cas_device_info(
+    args: argparse.Namespace,
+    client: EzvizClient | None,
+) -> EzvizCasDeviceInfo:
+    """Build local CAS device info from explicit fields or cloud CAS."""
+
+    if args.fetch_cas:
+        if client is None:
+            raise PyEzvizError("--fetch-cas requires --token-file or credentials")
+        serial = str(
+            _required_local_sdk_arg_or_credentials(args, "serial", ("serial",))
+        )
+        cas_serial = args.cas_serial or serial
+        session = CasDeviceSession.from_response(
+            EzvizCAS(client.export_token()).cas_get_encryption(cas_serial)
+        )
+        return EzvizCasDeviceInfo(
+            serial=serial,
+            operation_code=session.operation_code,
+            key=session.key,
+            encrypt_type=session.encrypt_type,
+        )
+
+    operation_code = _env_or_arg(
+        args,
+        "operation_code",
+        "EZVIZ_LOCAL_OPERATION_CODE",
+    ) or _local_sdk_credentials_value(args, ("cas", "operation_code"))
+    if not operation_code:
+        raise PyEzvizError(
+            "Missing --operation-code or EZVIZ_LOCAL_OPERATION_CODE; "
+            "provide it explicitly or via --credentials-file"
+        )
+    cas_key = _env_or_arg(args, "cas_key", "EZVIZ_LOCAL_CAS_KEY") or (
+        _local_sdk_credentials_value(args, ("cas", "key"))
+    )
+    if not cas_key:
+        raise PyEzvizError(
+            "Missing --cas-key or EZVIZ_LOCAL_CAS_KEY; "
+            "provide it explicitly or via --credentials-file"
+        )
+    serial = str(
+        _required_local_sdk_arg_or_credentials(args, "serial", ("serial",))
+    )
+    encrypt_type = _local_sdk_arg_or_credentials(
+        args,
+        "encrypt_type",
+        ("cas", "encrypt_type"),
+    )
+    return EzvizCasDeviceInfo(
+        serial=serial,
+        operation_code=str(operation_code),
+        key=str(cas_key),
+        encrypt_type=int(encrypt_type),
+    )
+
+
+def _build_local_sdk_cli_stream(
+    args: argparse.Namespace,
+    client: EzvizClient | None = None,
+) -> Any:
+    """Build the direct-local SDK stream from explicit CLI/environment fields."""
+
+    device_info = _local_sdk_cas_device_info(args, client)
+    host = str(_required_local_sdk_arg_or_credentials(args, "host", ("endpoint", "host")))
+    endpoint = HcNetSdkLanEndpoint(
+        serial=device_info.serial,
+        host=host,
+        command_port=int(
+            _local_sdk_arg_or_credentials(
+                args,
+                "command_port",
+                ("endpoint", "command_port"),
+            )
+            or 9010
+        ),
+        stream_port=int(
+            _local_sdk_arg_or_credentials(
+                args,
+                "stream_port",
+                ("endpoint", "stream_port"),
+            )
+            or 9020
+        ),
+    )
+    preview_request = EzvizLocalPreviewRequest(
+        operation_code=device_info.operation_code,
+        channel=args.channel,
+        receiver_info=_local_sdk_receiver_info_from_args(args),
+        receiver_info_ex=_local_sdk_receiver_info_ex_from_args(args),
+        authentication=_local_sdk_authentication_from_args(args),
+        is_encrypt=args.is_encrypt,
+        identifier=args.identifier,
+        uuid=(
+            _env_or_arg(args, "uuid", "EZVIZ_LOCAL_UUID")
+            if args.receiver_shape == "app"
+            else None
+        ),
+        timestamp=(
+            _env_or_arg(args, "timestamp", "EZVIZ_LOCAL_TIMESTAMP")
+            if args.receiver_shape == "app"
+            else None
+        ),
+        udt=args.udt,
+        nat=args.nat,
+        port_guess_type=args.port_guess_type,
+        timeout=args.setup_timeout,
+        heartbeat_interval=args.heartbeat_interval,
+    )
+    return open_local_sdk_stream(
+        endpoint,
+        device_info,
+        preview_request,
+        timeout=args.socket_timeout,
+        pre_start_body=_read_optional_binary_file(args.pre_start_body_file),
+        pre_start_sequence=args.pre_start_sequence,
+        preview_sequence=args.preview_sequence,
+        stream_setup_sequence=args.stream_sequence,
+        stream_rate=args.stream_rate,
+        stream_mode=args.stream_mode,
+        max_prefix_bytes=args.max_prefix_bytes,
+        command_source_port=(
+            args.receiver_port if args.receiver_shape == "app" else None
+        ),
+    )
+
+
+def _local_sdk_receiver_info_from_args(
+    args: argparse.Namespace,
+) -> EzvizLocalReceiverInfo | EzvizLocalReceiverInfoAttrs:
+    """Build the requested ReceiverInfo XML shape for local-SDK preview."""
+
+    if args.receiver_shape == "structured":
+        return EzvizLocalReceiverInfo(
+            nat_address=args.nat_address,
+            nat_port=args.nat_port,
+            upnp_address=args.upnp_address,
+            upnp_port=args.upnp_port,
+            inner_address=args.inner_address,
+            inner_port=args.inner_port,
+            stream_type=args.receiver_stream_type,
+        )
+    return EzvizLocalReceiverInfoAttrs(
+        address=args.nat_address,
+        port=args.receiver_port,
+        server_type=args.receiver_server_type,
+        stream_type=args.receiver_stream_type,
+        new_stream_type=args.receiver_new_stream_type,
+        trans_proto=args.receiver_trans_proto,
+    )
+
+
+def _local_sdk_receiver_info_ex_from_args(
+    args: argparse.Namespace,
+) -> EzvizLocalReceiverInfoEx | EzvizLocalReceiverInfoExAttrs:
+    """Build the requested ReceiverInfoEx XML shape for local-SDK preview."""
+
+    if args.receiver_shape == "structured":
+        return EzvizLocalReceiverInfoEx(
+            uuid=_env_or_arg(args, "uuid", "EZVIZ_LOCAL_UUID"),
+            timestamp=_env_or_arg(args, "timestamp", "EZVIZ_LOCAL_TIMESTAMP"),
+        )
+    return EzvizLocalReceiverInfoExAttrs(port=args.receiver_ex_port)
+
+
+def _local_sdk_authentication_from_args(
+    args: argparse.Namespace,
+) -> EzvizLocalAuthenticationAttrs | None:
+    """Return app-shaped Authentication only when that XML shape is requested."""
+
+    if args.receiver_shape == "structured":
+        return None
+    return EzvizLocalAuthenticationAttrs(
+        biz_code=args.auth_biz_code,
+        interval=args.auth_interval,
+    )
+
+
+def _handle_local_sdk_stream_dump(
+    args: argparse.Namespace,
+    client: EzvizClient | None = None,
+) -> int:
+    """Dump direct-local SDK media with caller-supplied local fields."""
+
+    with _build_local_sdk_cli_stream(args, client) as stream:
+        if args.output == "-":
+            if args.decrypt_video and args.format == "mpegps":
+                copy_local_stream_to_decrypted_mpegps(
+                    stream,
+                    sys.stdout.buffer,
+                    _local_sdk_media_key(args, client),
+                    nalu_header_size=_codec_nalu_header_size(args.decrypt_codec),
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            elif args.decrypt_video:
+                copy_local_stream_to_decrypted_mpegts(
+                    stream,
+                    sys.stdout.buffer,
+                    _local_sdk_media_key(args, client),
+                    ffmpeg_path=args.ffmpeg_path,
+                    nalu_header_size=_codec_nalu_header_size(args.decrypt_codec),
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            elif args.format == "mpegps":
+                copy_local_stream_to_mpegps(
+                    stream,
+                    sys.stdout.buffer,
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            else:
+                copy_local_stream_to_mpegts(
+                    stream,
+                    sys.stdout.buffer,
+                    ffmpeg_path=args.ffmpeg_path,
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            _write_local_sdk_metadata_output(args.metadata_output, stream)
+            return 0
+
+        with Path(args.output).open("wb") as output:
+            if args.decrypt_video and args.format == "mpegps":
+                copy_local_stream_to_decrypted_mpegps(
+                    stream,
+                    output,
+                    _local_sdk_media_key(args, client),
+                    nalu_header_size=_codec_nalu_header_size(args.decrypt_codec),
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            elif args.decrypt_video:
+                copy_local_stream_to_decrypted_mpegts(
+                    stream,
+                    output,
+                    _local_sdk_media_key(args, client),
+                    ffmpeg_path=args.ffmpeg_path,
+                    nalu_header_size=_codec_nalu_header_size(args.decrypt_codec),
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            elif args.format == "mpegps":
+                copy_local_stream_to_mpegps(
+                    stream,
+                    output,
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+            else:
+                copy_local_stream_to_mpegts(
+                    stream,
+                    output,
+                    ffmpeg_path=args.ffmpeg_path,
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                )
+        _write_local_sdk_metadata_output(args.metadata_output, stream)
+    return 0
+
+
+def _handle_local_sdk_keys(args: argparse.Namespace, client: EzvizClient) -> int:
+    """Fetch and print direct-local SDK credentials for explicit setup flows."""
+
+    credentials = get_local_sdk_stream_credentials_from_client(
+        client,
+        args.serial,
+        cas_serial=args.cas_serial,
+        fetch_media_key=not args.no_media_key,
+        smscode=args.sms_code,
+    )
+    _write_json(credentials.as_dict(include_media_key=not args.no_media_key))
+    return 0
+
+
+def _handle_h264_annexb_summary(args: argparse.Namespace) -> int:
+    """Summarize a local H.264 Annex-B elementary stream."""
+
+    data = Path(args.input).read_bytes()
+    idr_windows = summarize_h264_annexb_idr_windows(
+        data,
+        max_windows=args.max_idr_windows,
+    )
+    summary: dict[str, Any] = {
+        "input": args.input,
+        "units": summarize_h264_annexb_units(data, max_units=args.max_units),
+        "idr_windows": idr_windows,
+    }
+    if args.decode_idr_windows:
+        summary["decode_idr_windows"] = _decode_h264_annexb_idr_windows(
+            data,
+            idr_windows,
+            ffmpeg_path=args.ffmpeg_path,
+        )
+    _write_json(summary)
+    return 0
+
+
+def _handle_hcnetsdk_command_dump_summary(args: argparse.Namespace) -> int:
+    """Summarize offline HCNetSDK command-port dump artifacts."""
+
+    if (
+        not args.command_frame_dir
+        and not args.inbound_media_file
+        and not args.playm4_input_dir
+        and not args.native_annexb_dir
+    ):
+        raise PyEzvizError(
+            "hcnetsdk-command-dump-summary requires --command-frame-dir "
+            "or --inbound-media-file or --playm4-input-dir or --native-annexb-dir"
+        )
+    summary: dict[str, Any] = {}
+    if args.command_frame_dir:
+        summary["command_frames"] = _hcnetsdk_command_frame_dump_summary(
+            Path(args.command_frame_dir),
+            max_frames=args.max_frames,
+        )
+    if args.inbound_media_file:
+        summary["inbound_media"] = _hcnetsdk_inbound_media_dump_summary(
+            Path(args.inbound_media_file),
+            max_frames=args.max_frames,
+            decode_idr_windows=args.decode_idr_windows,
+            ffmpeg_path=args.ffmpeg_path,
+        )
+    if args.playm4_input_dir:
+        summary["playm4_input"] = _hcnetsdk_playm4_input_dump_summary(
+            Path(args.playm4_input_dir),
+            max_frames=args.max_frames,
+            decode_idr_windows=args.decode_idr_windows,
+            ffmpeg_path=args.ffmpeg_path,
+        )
+    if args.native_annexb_dir:
+        summary["native_annexb"] = _hcnetsdk_native_annexb_dump_summary(
+            Path(args.native_annexb_dir),
+            label=args.native_annexb_label,
+            codec=args.native_annexb_codec,
+            max_frames=args.max_frames,
+            decode_idr_windows=args.decode_idr_windows,
+            ffmpeg_path=args.ffmpeg_path,
+        )
+    _write_json(summary)
+    return 0
+
+
+def _hcnetsdk_command_frame_dump_summary(
+    directory: Path,
+    *,
+    max_frames: int,
+) -> dict[str, Any]:
+    """Return sanitized metadata for dumped outbound command frames."""
+
+    if max_frames <= 0:
+        raise PyEzvizError("--max-frames must be positive")
+    if not directory.is_dir():
+        raise PyEzvizError(f"Command frame dump directory not found: {directory}")
+
+    paths = sorted(directory.rglob("ezviz-hcnetsdk-command-frame-*.bin"))
+    samples: list[dict[str, Any]] = []
+    command_counts: dict[str, int] = {}
+    parse_errors: list[dict[str, str]] = []
+    for path in paths:
+        try:
+            frame_bytes = path.read_bytes()
+            frame = parse_hcnetsdk_tcp_frame(frame_bytes)
+        except (OSError, PyEzvizError) as err:
+            if len(parse_errors) < max_frames:
+                parse_errors.append({"path": str(path), "error": str(err)})
+            continue
+
+        command_id = (
+            frame.header.field_12
+            if frame.header.field_4 == HCNETSDK_COMMAND_PORT_CONTROL_FAMILY
+            else None
+        )
+        if command_id is not None:
+            key = f"0x{command_id:x}"
+            command_counts[key] = command_counts.get(key, 0) + 1
+        if len(samples) >= max_frames:
+            continue
+        sample: dict[str, Any] = {
+            "path": str(path),
+            "length": len(frame_bytes),
+            "total_length": frame.header.total_length,
+            "field_4": frame.header.field_4,
+            "field_8": frame.header.field_8,
+            "field_12": frame.header.field_12,
+            "body_length": len(frame.body),
+            "body_prefix_hex": frame.body[:16].hex(),
+        }
+        if command_id is not None:
+            sample["command_id"] = command_id
+            sample["auth_word"] = frame.header.field_8
+            tail = frame.body[16:]
+            if tail:
+                sample["body_tail_length"] = len(tail)
+                sample["body_tail_word_samples"] = (
+                    _hcnetsdk_command_port_body_tail_word_samples(tail)
+                )
+        samples.append(sample)
+
+    return {
+        "input": str(directory),
+        "file_count": len(paths),
+        "sample_limit": max_frames,
+        "samples": samples,
+        "truncated": len(paths) > len(samples),
+        "command_counts": command_counts,
+        "parse_errors": parse_errors,
+    }
+
+
+def _hcnetsdk_inbound_media_dump_summary(
+    path: Path,
+    *,
+    max_frames: int,
+    decode_idr_windows: bool,
+    ffmpeg_path: str,
+) -> dict[str, Any]:
+    """Return sanitized metadata for raw dumped command-port inbound media bytes."""
+
+    if max_frames <= 0:
+        raise PyEzvizError("--max-frames must be positive")
+    try:
+        data = path.read_bytes()
+    except OSError as err:
+        raise PyEzvizError(f"Inbound media dump not found: {path}") from err
+
+    scan = _scan_hcnetsdk_command_port_media_frames(data, max_frames=max_frames)
+    summary: dict[str, Any] = {
+        "input": str(path),
+        "byte_count": len(data),
+        **scan,
+    }
+    payloads = scan.get("payloads")
+    if isinstance(payloads, list):
+        packet_payloads = cast(list[bytes], payloads)
+        summary["idmx_h264"] = summarize_idmx_h264_local_packets(
+            packet_payloads,
+            max_frames=max_frames,
+        )
+        _add_hcnetsdk_annexb_dump_summary(
+            summary,
+            packet_payloads,
+            max_frames=max_frames,
+            decode_idr_windows=decode_idr_windows,
+            ffmpeg_path=ffmpeg_path,
+        )
+        del summary["payloads"]
+    return summary
+
+
+def _hcnetsdk_playm4_input_dump_summary(
+    directory: Path,
+    *,
+    max_frames: int,
+    decode_idr_windows: bool,
+    ffmpeg_path: str,
+) -> dict[str, Any]:
+    """Return sanitized metadata for PlayM4 input dump chunks."""
+
+    if max_frames <= 0:
+        raise PyEzvizError("--max-frames must be positive")
+    if not directory.is_dir():
+        raise PyEzvizError(f"PlayM4 input dump directory not found: {directory}")
+
+    paths = sorted(directory.rglob("*-playm4-input-*.bin"))
+    packets = [path.read_bytes() for path in paths]
+    summary: dict[str, Any] = {
+        "input": str(directory),
+        "file_count": len(paths),
+        "byte_count": sum(len(packet) for packet in packets),
+        "idmx_h264": summarize_idmx_h264_local_packets(
+            packets,
+            max_frames=max_frames,
+        ),
+    }
+    _add_hcnetsdk_annexb_dump_summary(
+        summary,
+        packets,
+        max_frames=max_frames,
+        decode_idr_windows=decode_idr_windows,
+        ffmpeg_path=ffmpeg_path,
+    )
+    return summary
+
+
+def _hcnetsdk_native_annexb_dump_summary(
+    directory: Path,
+    *,
+    label: str,
+    codec: str,
+    max_frames: int,
+    decode_idr_windows: bool,
+    ffmpeg_path: str,
+) -> dict[str, Any]:
+    """Return sanitized metadata for native Annex-B Frida dump chunks."""
+
+    if max_frames <= 0:
+        raise PyEzvizError("--max-frames must be positive")
+    if not directory.is_dir():
+        raise PyEzvizError(f"Native Annex-B dump directory not found: {directory}")
+
+    paths = sorted(directory.rglob(f"*-{label}-*.bin"))
+    chunks = [path.read_bytes() for path in paths]
+    data = b"".join(chunks)
+    detected_codec = _detect_native_annexb_codec(data, requested=codec)
+    samples = [
+        {
+            "path": str(path),
+            "size": len(chunk),
+            "sha256": hashlib.sha256(chunk).hexdigest(),
+        }
+        for path, chunk in zip(paths[:max_frames], chunks[:max_frames], strict=False)
+    ]
+    summary: dict[str, Any] = {
+        "input": str(directory),
+        "label": label,
+        "codec": detected_codec,
+        "requested_codec": codec,
+        "file_count": len(paths),
+        "byte_count": len(data),
+        "sample_limit": max_frames,
+        "samples": samples,
+        "truncated": len(paths) > len(samples),
+    }
+    if detected_codec == "hevc":
+        irap_windows = summarize_hevc_annexb_irap_windows(
+            data,
+            max_windows=max_frames,
+        )
+        summary["annexb_irap_windows"] = irap_windows
+        if decode_idr_windows:
+            summary["decode_irap_windows"] = _decode_annexb_windows(
+                data,
+                irap_windows,
+                ffmpeg_path=ffmpeg_path,
+                input_format="hevc",
+            )
+            summary["decode_chunk_windows"] = _decode_native_annexb_chunk_windows(
+                paths,
+                codec="hevc",
+                max_windows=max_frames,
+                ffmpeg_path=ffmpeg_path,
+            )
+        return summary
+
+    idr_windows = summarize_h264_annexb_idr_windows(
+        data,
+        max_windows=max_frames,
+    )
+    summary["annexb_units"] = summarize_h264_annexb_units(
+        data,
+        max_units=max_frames,
+    )
+    summary["annexb_idr_windows"] = idr_windows
+    if decode_idr_windows:
+        summary["decode_idr_windows"] = _decode_annexb_windows(
+            data,
+            idr_windows,
+            ffmpeg_path=ffmpeg_path,
+            input_format="h264",
+        )
+        summary["decode_chunk_windows"] = _decode_native_annexb_chunk_windows(
+            paths,
+            codec="h264",
+            max_windows=max_frames,
+            ffmpeg_path=ffmpeg_path,
+        )
+    return summary
+
+
+def _decode_native_annexb_chunk_windows(
+    paths: list[Path],
+    *,
+    codec: str,
+    max_windows: int,
+    ffmpeg_path: str,
+) -> list[dict[str, Any]]:
+    """Decode sampled IDR/IRAP-bearing native dump chunks independently."""
+
+    results: list[dict[str, Any]] = []
+    for path in paths:
+        data = path.read_bytes()
+        if codec == "hevc":
+            windows = summarize_hevc_annexb_irap_windows(data, max_windows=1)
+            decoded = _decode_annexb_windows(
+                data,
+                windows,
+                ffmpeg_path=ffmpeg_path,
+                input_format="hevc",
+            )
+        else:
+            windows = summarize_h264_annexb_idr_windows(data, max_windows=1)
+            decoded = _decode_annexb_windows(
+                data,
+                windows,
+                ffmpeg_path=ffmpeg_path,
+                input_format="h264",
+            )
+        if not decoded:
+            continue
+        result = {
+            "path": str(path),
+            "size": len(data),
+            **decoded[0],
+        }
+        results.append(result)
+        if len(results) >= max_windows:
+            break
+    return results
+
+
+def _detect_native_annexb_codec(data: bytes, *, requested: str) -> str:
+    """Return the requested or likely codec for Annex-B dump bytes."""
+
+    if requested != "auto":
+        return requested
+
+    h264_score = 0
+    hevc_score = 0
+    for index, prefix in enumerate(_iter_annexb_nal_prefixes(data)):
+        if index >= 256:
+            break
+        h264_type = prefix[0] & 0x1F
+        hevc_type = (prefix[0] >> 1) & 0x3F
+        if h264_type in {1, 5, 6, 7, 8, 9}:
+            h264_score += 2 if h264_type in {5, 7, 8} else 1
+        if hevc_type in {32, 33, 34}:
+            hevc_score += 3
+        elif 16 <= hevc_type <= 23:
+            hevc_score += 2
+        elif 0 <= hevc_type <= 31:
+            hevc_score += 1
+    return "hevc" if hevc_score > h264_score else "h264"
+
+
+def _iter_annexb_nal_prefixes(data: bytes) -> Iterator[bytes]:
+    """Yield the first bytes after Annex-B start codes."""
+
+    offset = 0
+    while offset < len(data):
+        three = data.find(b"\x00\x00\x01", offset)
+        four = data.find(b"\x00\x00\x00\x01", offset)
+        if three < 0 and four < 0:
+            return
+        if four >= 0 and (three < 0 or four <= three):
+            start_code_offset = four
+            start_code_size = 4
+        else:
+            start_code_offset = three
+            start_code_size = 3
+        nal_offset = start_code_offset + start_code_size
+        if nal_offset < len(data):
+            yield data[nal_offset : nal_offset + 2]
+        offset = nal_offset + 1
+
+
+def _add_hcnetsdk_annexb_dump_summary(
+    summary: dict[str, Any],
+    packets: list[bytes],
+    *,
+    max_frames: int,
+    decode_idr_windows: bool,
+    ffmpeg_path: str,
+) -> None:
+    """Attach sanitized reconstructed Annex-B metadata to a dump summary."""
+
+    try:
+        annexb, codec = _idmx_local_packets_to_annexb_with_codec(packets)
+    except PyEzvizError as err:
+        summary["annexb_error"] = str(err)
+        return
+    summary["annexb_codec"] = codec
+    if codec == "hevc":
+        irap_windows = summarize_hevc_annexb_irap_windows(
+            annexb,
+            max_windows=max_frames,
+        )
+        summary["annexb_irap_windows"] = irap_windows
+        if decode_idr_windows:
+            summary["decode_irap_windows"] = _decode_annexb_windows(
+                annexb,
+                irap_windows,
+                ffmpeg_path=ffmpeg_path,
+                input_format="hevc",
+            )
+        return
+
+    idr_windows = summarize_h264_annexb_idr_windows(
+        annexb,
+        max_windows=max_frames,
+    )
+    summary["annexb_units"] = summarize_h264_annexb_units(
+        annexb,
+        max_units=max_frames,
+    )
+    summary["annexb_idr_windows"] = idr_windows
+    if decode_idr_windows:
+        summary["decode_idr_windows"] = _decode_annexb_windows(
+            annexb,
+            idr_windows,
+            ffmpeg_path=ffmpeg_path,
+            input_format="h264",
+        )
+
+
+def _scan_hcnetsdk_command_port_media_frames(
+    data: bytes,
+    *,
+    max_frames: int,
+) -> dict[str, Any]:
+    """Scan raw command-port bytes for little-endian ``$`` media frames."""
+
+    offset = 0
+    payloads: list[bytes] = []
+    samples: list[dict[str, Any]] = []
+    prefix_bytes = 0
+    invalid_markers = 0
+    while offset < len(data):
+        marker = data.find(b"$", offset)
+        if marker < 0:
+            prefix_bytes += len(data) - offset
+            break
+        prefix_bytes += marker - offset
+        if marker + 4 > len(data):
+            invalid_markers += 1
+            break
+        channel = data[marker + 1]
+        total_length = int.from_bytes(data[marker + 2 : marker + 4], "little")
+        if total_length < 4 or marker + total_length > len(data):
+            invalid_markers += 1
+            offset = marker + 1
+            continue
+        payload = data[marker + 4 : marker + total_length]
+        payloads.append(payload)
+        if len(samples) < max_frames:
+            samples.append(
+                {
+                    "index": len(payloads) - 1,
+                    "offset": marker,
+                    "channel": channel,
+                    "total_length": total_length,
+                    "payload_length": len(payload),
+                    "payload_prefix_hex": payload[:16].hex(),
+                    "payload_sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            )
+        offset = marker + total_length
+
+    return {
+        "frame_count": len(payloads),
+        "prefix_bytes": prefix_bytes,
+        "invalid_markers": invalid_markers,
+        "sample_limit": max_frames,
+        "samples": samples,
+        "truncated": len(payloads) > len(samples),
+        "payloads": payloads,
+    }
+
+
+def _handle_hcnetsdk_command_plan_generate(args: argparse.Namespace) -> int:
+    """Convert concrete port-8000 control frames into generated templates."""
+
+    try:
+        data = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        raise PyEzvizError("Invalid HCNetSDK command plan JSON") from err
+    concrete = _hcnetsdk_command_plan_from_json(data)
+    auth_seed = None if args.auth_seed is None else _hcnetsdk_int(args.auth_seed)
+    key = None if args.key_hex is None else _bytes_from_hex_value(args.key_hex)
+    if (auth_seed is None) != (key is None):
+        raise PyEzvizError("--auth-seed and --key-hex must be supplied together")
+    generated = hcnetsdk_command_port_generated_plan_from_socket_plan(
+        concrete,
+        auth_seed=auth_seed,
+        key=key,
+    )
+    text = (
+        json.dumps(
+            _hcnetsdk_generated_plan_to_json(generated),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    if args.output == "-":
+        sys.stdout.write(text)
+    else:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+    return 0
+
+
+def _hcnetsdk_generated_plan_to_json(
+    plan: HcNetSdkCommandPortGeneratedMultiSocketPlan,
+) -> dict[str, Any]:
+    """Return the public JSON shape for a generated command-port plan."""
+
+    return {
+        "steps": [
+            _hcnetsdk_generated_plan_step_to_json(step)
+            for step in plan.steps
+        ]
+    }
+
+
+def _hcnetsdk_generated_plan_step_to_json(
+    step: HcNetSdkCommandPortGeneratedSocketStep,
+) -> dict[str, Any]:
+    """Return JSON for one generated command-port socket step."""
+
+    value: dict[str, Any] = {
+        "templates": [
+            _hcnetsdk_command_template_to_json(template)
+            for template in step.control_templates
+        ],
+    }
+    if step.name is not None:
+        value["name"] = step.name
+    if step.read_response_after_each is not True:
+        value["read_responses"] = step.read_response_after_each
+    if step.response_reads_after_each is not None:
+        value["response_reads"] = step.response_reads_after_each
+    if step.media_socket:
+        value["media_socket"] = True
+    if step.read_first_media_immediately:
+        value["read_first_media_immediately"] = True
+    if step.delay_after_commands_seconds:
+        value["delay_after_commands_seconds"] = step.delay_after_commands_seconds
+    if step.drain_media_before_next_step_seconds:
+        value["drain_media_before_next_step_seconds"] = (
+            step.drain_media_before_next_step_seconds
+        )
+    if step.keepalive_templates:
+        value["keepalive_templates"] = [
+            _hcnetsdk_command_template_to_json(template)
+            for template in step.keepalive_templates
+        ]
+    if (
+        step.keepalive_interval_seconds
+        != HCNETSDK_COMMAND_PLAN_DEFAULT_KEEPALIVE_INTERVAL_SECONDS
+    ):
+        value["keepalive_interval_seconds"] = step.keepalive_interval_seconds
+    if step.keepalive_initial_delay_seconds is not None:
+        value["keepalive_initial_delay_seconds"] = (
+            step.keepalive_initial_delay_seconds
+        )
+    return value
+
+
+def _hcnetsdk_command_template_to_json(
+    template: HcNetSdkCommandPortControlTemplate,
+) -> dict[str, Any]:
+    """Return JSON for one generated command-port control template."""
+
+    value: dict[str, Any] = {
+        "command_id": f"0x{template.command_id:x}",
+    }
+    if template.name is not None:
+        value["name"] = template.name
+    if template.body_tail:
+        value["body_tail_hex"] = template.body_tail.hex()
+    if template.addend is not None:
+        value["addend"] = f"0x{template.addend:x}"
+    if template.addend_delta is not None:
+        value["addend_delta"] = template.addend_delta
+    if template.mask_seed != b"\x00" * 6:
+        value["mask_seed_hex"] = template.mask_seed.hex()
+    if template.body_tail_transform is not None:
+        value["body_tail_transform"] = template.body_tail_transform
+    return value
+
+
+def _decode_annexb_windows(
+    data: bytes,
+    window_summary: Mapping[str, Any],
+    *,
+    ffmpeg_path: str,
+    input_format: str,
+) -> list[dict[str, Any]]:
+    """Return bounded ffmpeg decode results for sampled Annex-B windows."""
+
+    results: list[dict[str, Any]] = []
+    samples = window_summary.get("samples")
+    if not isinstance(samples, list):
+        return results
+    for sample in samples:
+        if not isinstance(sample, Mapping):
+            continue
+        start_offset = sample.get("start_code_offset")
+        if not isinstance(start_offset, int):
+            continue
+        cut = data[start_offset:]
+        result: dict[str, Any] = {
+            "index": sample.get("index"),
+            "start_code_offset": start_offset,
+            "input_bytes": len(cut),
+        }
+        try:
+            completed = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-v",
+                    "error",
+                    "-f",
+                    input_format,
+                    "-i",
+                    "pipe:0",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                input=cut,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+        except OSError as err:
+            raise PyEzvizError(f"Could not launch FFmpeg at {ffmpeg_path!r}: {err}") from err
+        except subprocess.TimeoutExpired:
+            result["returncode"] = None
+            result["decode_clean"] = False
+            result["stderr"] = ["ffmpeg decode timed out"]
+            results.append(result)
+            continue
+        stderr_text = completed.stderr.decode("utf-8", errors="replace")
+        stderr_lines = [line for line in stderr_text.splitlines() if line][:8]
+        result["returncode"] = completed.returncode
+        result["decode_clean"] = completed.returncode == 0 and not stderr_lines
+        result["stderr"] = stderr_lines
+        results.append(result)
+    return results
+
+
+def _decode_h264_annexb_idr_windows(
+    data: bytes,
+    idr_summary: Mapping[str, Any],
+    *,
+    ffmpeg_path: str,
+) -> list[dict[str, Any]]:
+    """Return bounded ffmpeg decode results for sampled H.264 IDR windows."""
+
+    return _decode_annexb_windows(
+        data,
+        idr_summary,
+        ffmpeg_path=ffmpeg_path,
+        input_format="h264",
+    )
+
+
+def _write_local_sdk_metadata_output(
+    path: str | None,
+    stream: Any,
+    *,
+    packet_output_path: str | None = None,
+) -> None:
+    """Write safe stream metadata and optional bounded packet samples."""
+
+    metadata = _local_sdk_stream_metadata(stream)
+    if packet_output_path:
+        _write_hcnetsdk_sampled_packet_output(packet_output_path, stream)
+    if path:
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _write_hcnetsdk_sampled_packet_output(path: str, stream: Any) -> None:
+    """Write bounded sampled command-port packets as raw dump-compatible frames."""
+
+    packets = getattr(stream, "_idmx_summary_packets", None)
+    if not isinstance(packets, list):
+        return
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as output:
+        for packet in packets:
+            if not isinstance(packet, bytes):
+                continue
+            output.write(b"$\0")
+            output.write((len(packet) + 4).to_bytes(2, "little"))
+            output.write(packet)
+
+
+def _local_sdk_stream_metadata(stream: Any) -> dict[str, Any]:
+    """Return non-secret direct-local SDK bootstrap and media metadata."""
+
+    finalize_packet_summary = getattr(stream, "finalize_packet_summary", None)
+    if callable(finalize_packet_summary):
+        finalize_packet_summary()
+
+    bootstrap = getattr(stream, "bootstrap", None)
+    metadata: dict[str, Any] = {
+        "bootstrap_complete": bootstrap is not None,
+    }
+    sdk_client = getattr(stream, "sdk_client", None)
+    endpoint = getattr(sdk_client, "endpoint", None)
+    if endpoint is not None:
+        metadata["endpoint"] = {
+            "serial": getattr(endpoint, "serial", None),
+            "host": getattr(endpoint, "host", None),
+            "command_port": getattr(endpoint, "command_port", None),
+            "stream_port": getattr(endpoint, "stream_port", None),
+        }
+    if bootstrap is None:
+        return metadata
+
+    command_port_exchanges = getattr(bootstrap, "exchanges", None)
+    if command_port_exchanges is not None:
+        metadata["command_port_exchanges"] = [
+            _hcnetsdk_command_port_exchange_metadata(exchange)
+            for exchange in command_port_exchanges
+        ]
+    packet_summary = getattr(stream, "packet_summary", None)
+    if isinstance(packet_summary, dict):
+        metadata["packets"] = packet_summary
+    keepalive_events = getattr(stream, "keepalive_events", None)
+    if keepalive_events:
+        metadata["keepalive_events"] = [
+            {
+                "index": getattr(event, "index", None),
+                "command_id": getattr(event, "command_id", None),
+                "elapsed_seconds": getattr(event, "elapsed_seconds", None),
+                "sent": getattr(event, "sent", None),
+                "error": getattr(event, "error", None),
+            }
+            for event in keepalive_events
+        ]
+
+    exchanges: dict[str, Any] = {}
+    for name in ("pre_start", "preview", "stream_setup"):
+        exchange = getattr(bootstrap, name, None)
+        if exchange is None:
+            continue
+        response = getattr(exchange, "response", None)
+        header = getattr(response, "header", None)
+        body = getattr(response, "body", b"")
+        body_shape = classify_ezviz_local_sdk_body(body)
+        exchanges[name] = {
+            "response_command": getattr(header, "command", None),
+            "response_sequence": getattr(header, "sequence", None),
+            "response_status": getattr(header, "status", None),
+            "response_body_length": getattr(header, "body_length", None),
+            "response_body_kind": body_shape.kind,
+            "response_xml_tags": list(body_shape.xml_tags),
+        }
+    metadata["exchanges"] = exchanges
+
+    first_media = getattr(bootstrap, "first_media", None)
+    if first_media is not None:
+        frame = first_media.frame
+        metadata["first_media"] = {
+            "prefix_length": len(first_media.prefix),
+            "prefix_sha256": hashlib.sha256(first_media.prefix).hexdigest(),
+            "channel": frame.header.channel,
+            "payload_length": frame.header.payload_length,
+            "payload_sha256": hashlib.sha256(frame.payload).hexdigest(),
+        }
+    return metadata
+
+
+def _hcnetsdk_command_port_exchange_metadata(exchange: Any) -> dict[str, Any]:
+    """Return non-secret metadata for one command-port request/response."""
+
+    frame = getattr(exchange, "request", b"")
+    response = getattr(exchange, "response", None)
+    metadata: dict[str, Any] = {
+        "request_length": len(frame),
+    }
+    if len(frame) >= 16:
+        metadata["request_command_family"] = int.from_bytes(frame[4:8], "big")
+        metadata["request_auth_word"] = int.from_bytes(frame[8:12], "big")
+        metadata["request_command_id"] = int.from_bytes(frame[12:16], "big")
+    if len(frame) > 32:
+        tail = frame[32:]
+        metadata["request_body_tail_length"] = len(tail)
+        metadata["request_body_tail_word_samples"] = (
+            _hcnetsdk_command_port_body_tail_word_samples(tail)
+        )
+
+    if response is None:
+        metadata["response"] = None
+        return metadata
+
+    header = getattr(response, "header", None)
+    body = getattr(response, "body", b"")
+    metadata["response"] = {
+        "total_length": getattr(header, "total_length", None),
+        "field_4": getattr(header, "field_4", None),
+        "field_8": getattr(header, "field_8", None),
+        "field_12": getattr(header, "field_12", None),
+        "body_length": len(body),
+        "body_prefix_hex": body[:16].hex(),
+    }
+    if body:
+        metadata["response"]["body_word_samples"] = (
+            _hcnetsdk_command_port_body_word_samples(body)
+        )
+    return metadata
+
+
+def _hcnetsdk_command_port_body_word_samples(
+    body: bytes,
+    *,
+    max_samples: int = 16,
+) -> list[dict[str, int]]:
+    """Return bounded nonzero 32-bit body words for diagnostics."""
+
+    samples: list[dict[str, int]] = []
+    for offset in range(0, len(body) - 3, 4):
+        value = int.from_bytes(body[offset : offset + 4], "big")
+        if value == 0:
+            continue
+        samples.append({"offset": offset, "be": value})
+        if len(samples) >= max_samples:
+            break
+    return samples
+
+
+def _hcnetsdk_command_port_body_tail_word_samples(
+    tail: bytes,
+    *,
+    max_samples: int = 16,
+) -> list[dict[str, int]]:
+    """Return bounded nonzero 32-bit request-tail words for diagnostics."""
+
+    return _hcnetsdk_command_port_body_word_samples(
+        tail,
+        max_samples=max_samples,
+    )
+
+
 def _handle_stream(args: argparse.Namespace, client: EzvizClient) -> int:
     """Handle experimental stream helpers."""
 
-    if args.stream_action not in {"trace", "dump", "proxy"}:
+    if args.stream_action not in {
+        "trace",
+        "dump",
+        "proxy",
+        "local-sdk-dump",
+        "local-sdk-keys",
+        "h264-annexb-summary",
+        "hcnetsdk-command-dump-summary",
+        "hcnetsdk-command-plan-generate",
+    }:
         _LOGGER.error("Action not implemented, try running with -h switch for help")
         return 2
+
+    if args.stream_action == "hcnetsdk-command-dump-summary":
+        return _handle_hcnetsdk_command_dump_summary(args)
+
+    if args.stream_action == "hcnetsdk-command-plan-generate":
+        return _handle_hcnetsdk_command_plan_generate(args)
+
+    if args.stream_action == "h264-annexb-summary":
+        return _handle_h264_annexb_summary(args)
+
+    if args.stream_action == "local-sdk-keys":
+        return _handle_local_sdk_keys(args, client)
+
+    if args.stream_action == "local-sdk-dump":
+        return _handle_local_sdk_stream_dump(args, client)
 
     if args.stream_action == "proxy":
         _serve_stream_proxy(args, client)
@@ -1888,14 +4894,54 @@ def _handle_stream(args: argparse.Namespace, client: EzvizClient) -> int:
                 raise PyEzvizError(
                     "--decrypt-video requires --duration or --max-packets to bound memory use"
                 )
+            collected_packets: list[Any] | None = None
+            if args.decrypt_video:
+                collected_packets = _collect_stream_packets(
+                    stream,
+                    max_packets=args.max_packets,
+                    duration_seconds=args.duration,
+                    allow_encrypted=args.allow_encrypted,
+                )
+                transport = _detect_stream_packets_transport(collected_packets)
+                if transport == StreamTransport.RTP:
+                    rtp_codec = _detect_rtp_video_codec(collected_packets)
+                    decrypt_codec = (
+                        rtp_codec if args.decrypt_codec == "auto" else args.decrypt_codec
+                    )
+                    payload = _rtp_packets_to_annexb(collected_packets, codec=rtp_codec)
+                    payload = _decrypt_annexb_video_bytes(
+                        client,
+                        args.serial,
+                        payload,
+                        codec=decrypt_codec,
+                    )
+                    if args.output == "-":
+                        if args.format == "raw":
+                            sys.stdout.buffer.write(payload)
+                            sys.stdout.buffer.flush()
+                        else:
+                            _remux_elementary_video_bytes_to_mpegts(
+                                payload,
+                                sys.stdout.buffer,
+                                ffmpeg_path=args.ffmpeg_path,
+                                codec=rtp_codec,
+                            )
+                    else:
+                        with Path(args.output).open("wb") as output:
+                            if args.format == "raw":
+                                output.write(payload)
+                                output.flush()
+                            else:
+                                _remux_elementary_video_bytes_to_mpegts(
+                                    payload,
+                                    output,
+                                    ffmpeg_path=args.ffmpeg_path,
+                                    codec=rtp_codec,
+                                )
+                    return 0
             if args.output == "-":
                 if args.decrypt_video:
-                    payload = _collect_stream_payloads(
-                        stream,
-                        max_packets=args.max_packets,
-                        duration_seconds=args.duration,
-                        allow_encrypted=args.allow_encrypted,
-                    )
+                    payload = b"".join(packet.body for packet in collected_packets or [])
                     payload = _decrypt_stream_payload_bytes(
                         client,
                         args.serial,
@@ -1931,12 +4977,7 @@ def _handle_stream(args: argparse.Namespace, client: EzvizClient) -> int:
             else:
                 with Path(args.output).open("wb") as output:
                     if args.decrypt_video:
-                        payload = _collect_stream_payloads(
-                            stream,
-                            max_packets=args.max_packets,
-                            duration_seconds=args.duration,
-                            allow_encrypted=args.allow_encrypted,
-                        )
+                        payload = b"".join(packet.body for packet in collected_packets or [])
                         payload = _decrypt_stream_payload_bytes(
                             client,
                             args.serial,
@@ -2081,26 +5122,79 @@ def _save_token_file(path: str | None, token: dict[str, Any]) -> None:
         _LOGGER.warning("Failed to save token file: %s", p)
 
 
+def _save_clip_can_run_without_cloud_credentials(args: argparse.Namespace) -> bool:
+    return (
+        args.action == "save"
+        and getattr(args, "save_action", None) == "clip"
+        and getattr(args, "source", None) == "hcnetsdk-command-port"
+        and (not args.decrypt_video or _local_sdk_has_static_media_key(args))
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args = _parse_args(argv)
     _setup_logging(args.debug)
 
     token = _load_token_file(args.token_file)
+    has_session_token = bool(token and token.get("session_id"))
     if args.action == "cloud_video_decrypt" and args.key and not args.serial and not token:
         try:
             return _handle_cloud_video_decrypt(args, None)
         except PyEzvizError as exp:
             _LOGGER.error("%s", exp)
             return 1
+    if (
+        args.action == "stream"
+        and args.stream_action == "local-sdk-dump"
+        and not args.fetch_cas
+        and (not args.decrypt_video or _local_sdk_has_static_media_key(args))
+    ):
+        try:
+            return _handle_local_sdk_stream_dump(args)
+        except PyEzvizError as exp:
+            _LOGGER.error("%s", exp)
+            return 1
+    if args.action == "stream" and args.stream_action == "h264-annexb-summary":
+        try:
+            return _handle_h264_annexb_summary(args)
+        except PyEzvizError as exp:
+            _LOGGER.error("%s", exp)
+            return 1
+    if args.action == "stream" and args.stream_action == "hcnetsdk-command-dump-summary":
+        try:
+            return _handle_hcnetsdk_command_dump_summary(args)
+        except PyEzvizError as exp:
+            _LOGGER.error("%s", exp)
+            return 1
+    if args.action == "stream" and args.stream_action == "hcnetsdk-command-plan-generate":
+        try:
+            return _handle_hcnetsdk_command_plan_generate(args)
+        except PyEzvizError as exp:
+            _LOGGER.error("%s", exp)
+            return 1
 
-    if not token and (not args.username or not args.password):
+    if _save_clip_can_run_without_cloud_credentials(args):
+        client = EzvizClient(args.username, args.password, args.region, token=token)
+        try:
+            return _handle_save(args, client)
+        except PyEzvizError as exp:
+            _LOGGER.error("%s", exp)
+            return 1
+        finally:
+            client.close_session()
+
+    if not has_session_token and (not args.username or not args.password):
         _LOGGER.error("Provide --token-file (existing) or --username/--password")
         return 2
 
     client = EzvizClient(args.username, args.password, args.region, token=token)
     try:
-        _login(client)
+        _login(
+            client,
+            token,
+            require_service_urls=_action_requires_service_urls(args),
+        )
 
         if args.action == "devices":
             return _handle_devices(args, client)
@@ -2114,6 +5208,8 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_mqtt(args, client)
         if args.action == "stream":
             return _handle_stream(args, client)
+        if args.action == "save":
+            return _handle_save(args, client)
         if args.action == "camera":
             return _handle_camera(args, client)
         if args.action == "pagelist":
