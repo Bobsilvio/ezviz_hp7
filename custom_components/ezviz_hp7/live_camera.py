@@ -727,6 +727,7 @@ class Hp7StreamRelay:
 
         loop = asyncio.get_event_loop()
         proc: Optional[asyncio.subprocess.Process] = None
+        eof_task: Optional[asyncio.Task] = None
         v_listener: Optional[socket.socket] = None
         a_listener: Optional[socket.socket] = None
         threads: List[threading.Thread] = []
@@ -920,6 +921,33 @@ class Hp7StreamRelay:
             for t in threads:
                 t.start()
 
+            # Watch the client side for EOF. HA's stream worker / go2rtc
+            # closes its read half when the viewer goes away; the output
+            # pump below would otherwise never notice (it only writes), so
+            # ffmpeg + the LAN session would run forever and the browser
+            # would keep playing audio after the card is closed (#36 — bob).
+            # On EOF we kill ffmpeg so the stdout pump unblocks and the
+            # finally-block tears everything down.
+            async def _watch_client_eof(
+                rd: asyncio.StreamReader,
+                proc_ref: asyncio.subprocess.Process,
+            ) -> None:
+                try:
+                    while True:
+                        chunk = await rd.read(4096)
+                        if not chunk:  # EOF — client closed its half
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc_ref.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    pass
+
+            eof_task = asyncio.create_task(_watch_client_eof(reader, proc))
+
             assert proc.stdout is not None
             while True:
                 data = await proc.stdout.read(RELAY_CHUNK)
@@ -937,6 +965,8 @@ class Hp7StreamRelay:
             )
         finally:
             stop_event.set()
+            if eof_task is not None:
+                eof_task.cancel()
             # Unsubscribe from the shared broadcast.
             for q in (v_q, a_q, raw_q):
                 try:
