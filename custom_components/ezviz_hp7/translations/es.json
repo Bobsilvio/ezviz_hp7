@@ -221,7 +221,8 @@
           "monitor_serial": "Serial del monitor interior",
           "relay_port": "Puerto TCP fijo del relay (0 = aleatorio, recomendado 8554 para go2rtc / mediamtx)",
           "aggressive_mpegts": "Compatibilidad MPEG-TS agresiva (activa si ves 'Immediate exit requested' en los logs; seguro dejarlo OFF por defecto)",
-          "video_codec": "Códec de vídeo (auto = detectar; hevc transcodifica H.265 a H.264 para WebRTC; hevc_copy pasa H.265 sin tocar para hosts de baja potencia / Frigate / Safari)"
+          "video_codec": "Códec de vídeo (auto = detectar; hevc transcodifica H.265 a H.264 para WebRTC; hevc_copy pasa H.265 sin tocar para hosts de baja potencia / Frigate / Safari)",
+          "stream_source": "Fuente del stream (cloud = relay VTM EZVIZ; local = LAN directa, evita la nube y arregla 'sin directo' en firmware que no envía a la nube — requiere HA en la misma red que el videoportero; auto = prueba local y luego cloud)"
         }
       }
     }

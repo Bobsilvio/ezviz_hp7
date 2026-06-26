@@ -199,6 +199,11 @@ Pull requests and issues welcome. Open an [issue](../../issues) for bugs or feat
 
 This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi), vendored locally under `custom_components/ezviz_hp7/pylocalapi/` to pin the version and avoid breaking changes from upstream releases.
 
+### Credits
+
+- **Cloud VTM relay** — built on [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi).
+- **Local LAN stream (CPD7)** — the direct-LAN streaming protocol (ports 9010/9020, AES-128-CBC control frames, ECDH P-256 key agreement, ChaCha20 media decryption) was reverse engineered by **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**. The `cpd7/` modules are vendored from that fork under its MIT license, with thanks. This integration adds the EZVIZ p2p-register + CAS step that unlocks the LAN AES key (the missing piece that returned `1052170` before).
+
 ---
 
 ## 📜 License

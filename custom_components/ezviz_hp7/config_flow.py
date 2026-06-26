@@ -20,6 +20,9 @@ from .const import (
     CONF_VIDEO_CODEC,
     VIDEO_CODEC_AUTO,
     VIDEO_CODECS,
+    CONF_STREAM_SOURCE,
+    STREAM_SOURCE_CLOUD,
+    STREAM_SOURCES,
 )
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
 
@@ -325,6 +328,11 @@ class OptionsFlow(config_entries.OptionsFlow):
             ).lower()
             if codec not in VIDEO_CODECS:
                 codec = VIDEO_CODEC_AUTO
+            source = str(
+                user_input.get(CONF_STREAM_SOURCE) or STREAM_SOURCE_CLOUD
+            ).lower()
+            if source not in STREAM_SOURCES:
+                source = STREAM_SOURCE_CLOUD
             return self.async_create_entry(
                 title="",
                 data={
@@ -332,6 +340,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_RELAY_PORT: relay_port,
                     CONF_AGGRESSIVE_MPEGTS: aggressive,
                     CONF_VIDEO_CODEC: codec,
+                    CONF_STREAM_SOURCE: source,
                 },
             )
 
@@ -373,6 +382,16 @@ class OptionsFlow(config_entries.OptionsFlow):
         if current_codec not in VIDEO_CODECS:
             current_codec = VIDEO_CODEC_AUTO
 
+        current_source = str(
+            self.config_entry.options.get(
+                CONF_STREAM_SOURCE,
+                self.config_entry.data.get(CONF_STREAM_SOURCE, STREAM_SOURCE_CLOUD),
+            )
+            or STREAM_SOURCE_CLOUD
+        ).lower()
+        if current_source not in STREAM_SOURCES:
+            current_source = STREAM_SOURCE_CLOUD
+
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
@@ -385,6 +404,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_VIDEO_CODEC, default=current_codec
                 ): vol.In(VIDEO_CODECS),
+                vol.Optional(
+                    CONF_STREAM_SOURCE, default=current_source
+                ): vol.In(STREAM_SOURCES),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

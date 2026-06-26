@@ -18,6 +18,9 @@ from .const import (
     CONF_VIDEO_CODEC,
     VIDEO_CODEC_AUTO,
     VIDEO_CODECS,
+    CONF_STREAM_SOURCE,
+    STREAM_SOURCE_CLOUD,
+    STREAM_SOURCES,
 )
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
@@ -89,6 +92,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ).lower()
     if video_codec not in VIDEO_CODECS:
         video_codec = VIDEO_CODEC_AUTO
+    stream_source = str(
+        entry.options.get(
+            CONF_STREAM_SOURCE,
+            entry.data.get(CONF_STREAM_SOURCE, STREAM_SOURCE_CLOUD),
+        )
+        or STREAM_SOURCE_CLOUD
+    ).lower()
+    if stream_source not in STREAM_SOURCES:
+        stream_source = STREAM_SOURCE_CLOUD
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -123,6 +135,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "relay_port": relay_port,
         "aggressive_mpegts": aggressive_mpegts,
         "video_codec": video_codec,
+        "stream_source": stream_source,
         "coordinator": coordinator,
     }
 

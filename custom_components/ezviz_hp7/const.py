@@ -36,6 +36,19 @@ VIDEO_CODECS = [
     VIDEO_CODEC_HEVC_COPY,
 ]
 
+# Stream source: where the live relay pulls A/V from.
+#   cloud — EZVIZ VTM cloud relay (works when the device pushes to the cloud)
+#   local — CPD7 LAN pipeline, ports 9010/9020 (bypasses the cloud; works on
+#           firmware whose VTM channel never pushes — #33/#36/#37). Requires
+#           HA to be on the same LAN as the doorbell. LAN protocol reverse
+#           engineered by albrzmr.
+#   auto  — try LAN first, fall back to cloud.
+CONF_STREAM_SOURCE = "stream_source"
+STREAM_SOURCE_CLOUD = "cloud"
+STREAM_SOURCE_LOCAL = "local"
+STREAM_SOURCE_AUTO = "auto"
+STREAM_SOURCES = [STREAM_SOURCE_CLOUD, STREAM_SOURCE_LOCAL, STREAM_SOURCE_AUTO]
+
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
 

@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
+import requests
 from requests.exceptions import RequestException
 
 from .pylocalapi.client import EzvizClient
 from .pylocalapi.camera import EzvizCamera
+from .pylocalapi.cas import EzvizCAS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +54,11 @@ class Hp7Api:
         self._url = REGION_URLS.get(region, REGION_URLS["eu"])
         self.supports_door = True
         self.supports_gate = True
+        # LAN AES control-key cache: bare_serial -> (key_bytes, monotonic_ts).
+        # The key is fetched from EZVIZ CAS (after a p2p-register that
+        # authorises this client) and is stable until the doorbell is
+        # re-paired, so we cache it for the session.
+        self._lan_aes_cache: dict[str, tuple[bytes, float]] = {}
         # Serials for which EZVIZ told us "device does not exist". We
         # cache them in-memory for the session so we stop hammering the
         # ChimeMusic endpoint on every 30s coordinator tick (#33 — old
@@ -191,6 +199,121 @@ class Hp7Api:
                 _LOGGER.debug("Error during logout: %s", exc)
             finally:
                 self._client = None
+
+    # ── LAN (CPD7) streaming credentials ────────────────────────────────
+    #
+    # The local stream path needs two things from the cloud:
+    #   1. A p2p-register POST that authorises this client to open the
+    #      doorbell's LAN streaming ports. Without it, CAS get-encryption
+    #      returns Result=1052170 (no Session). This was THE blocker that
+    #      made the local path look impossible.
+    #   2. The 16-byte AES-128 control key from CAS get-encryption, keyed
+    #      on the BARE serial (the part before the dash).
+    # Credit: the p2p-register requirement and the CPD7 LAN protocol were
+    # discovered by albrzmr (https://github.com/albrzmr/ezviz_hp7).
+
+    LAN_AES_KEY_TTL = 3600.0
+
+    @staticmethod
+    def _bare_serial(serial: str) -> str:
+        return serial.split("-", 1)[0]
+
+    def get_related_device(self, serial: str) -> str:
+        """Return the camera-module sub-serial for the InviteStream.
+
+        HP7 composite serials are ``MAIN-CAM``; the camera module is the
+        part after the dash. Falls back to the main serial otherwise (the
+        doorbell sometimes accepts that).
+        """
+        if "-" in serial:
+            return serial.split("-", 1)[1]
+        return serial
+
+    def _p2p_register(self) -> None:
+        """Authorise this client to open the doorbell's LAN streaming ports.
+
+        Best-effort POST mirroring what the official app sends right before
+        a live-view session. No raise on failure.
+        """
+        self.ensure_client()
+        if not self._client:
+            return
+        session_id = None
+        try:
+            session_id = self._client.export_token().get("session_id")
+        except Exception:  # noqa: BLE001
+            session_id = None
+        if not session_id:
+            return
+        url = f"https://{self._url}/v3/p2pbusiness/configurations/p2p"
+        headers = {
+            "appId": "ys7",
+            "clientType": "1",
+            "netType": "WIFI",
+            "User-Agent": "EZVIZ/CloudClient",
+        }
+        try:
+            resp = requests.post(
+                url, headers=headers, data={"sessionId": session_id}, timeout=8.0
+            )
+            _LOGGER.debug("EZVIZ HP7: p2p register -> %d", resp.status_code)
+        except RequestException as exc:
+            _LOGGER.debug("EZVIZ HP7: p2p register failed (best-effort): %s", exc)
+
+    def fetch_lan_aes_key(self, serial: str, force: bool = False) -> bytes:
+        """Return the 16-byte AES-128 LAN control key for the device.
+
+        Runs the p2p-register, then queries CAS get-encryption on the bare
+        serial. Cached per session. Raises RuntimeError if unavailable.
+        """
+        bare = self._bare_serial(serial)
+        if not force:
+            cached = self._lan_aes_cache.get(bare)
+            if cached and (time.monotonic() - cached[1]) < self.LAN_AES_KEY_TTL:
+                return cached[0]
+
+        self.ensure_client()
+        if not self._client:
+            raise RuntimeError("EZVIZ client not initialised for LAN key fetch")
+
+        self._p2p_register()
+        try:
+            info = EzvizCAS(self._client.export_token()).cas_get_encryption(bare)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"CAS get-encryption failed: {exc}") from exc
+
+        session = (info or {}).get("Response", {}).get("Session", {})
+        key_str = str(session.get("@Key") or "")
+        if len(key_str) != 16:
+            result = (info or {}).get("Response", {}).get("Result")
+            raise RuntimeError(
+                f"invalid LAN AES key from CAS (Result={result}, key={key_str!r})"
+            )
+        key_bytes = key_str.encode("ascii")
+        self._lan_aes_cache[bare] = (key_bytes, time.monotonic())
+        return key_bytes
+
+    def invalidate_lan_aes_key(self, serial: str | None = None) -> None:
+        """Drop cached LAN AES key(s); call when decrypt fails (re-pair)."""
+        if serial is None:
+            self._lan_aes_cache.clear()
+        else:
+            self._lan_aes_cache.pop(self._bare_serial(serial), None)
+
+    def get_local_ip(self, serial: str) -> str | None:
+        """Resolve the doorbell's LAN IP from its CONNECTION metadata."""
+        self.ensure_client()
+        if not self._client:
+            return None
+        try:
+            from .pylocalapi.local_stream import _local_sdk_endpoint_from_client
+
+            endpoint = _local_sdk_endpoint_from_client(self._client, serial)
+            host = getattr(endpoint, "host", None)
+            return str(host) if host else None
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("EZVIZ HP7: local IP resolve failed for %s: %s", serial, exc)
+            return None
 
     def _try_unlock(self, serial: str, lock_no: int) -> bool:
         """Attempt to unlock a specific lock.

@@ -65,6 +65,101 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+
+class Cpd7LanSource:
+    """VTM-shaped wrapper around the CPD7 LAN pipeline.
+
+    Exposes ``start()`` / ``iter_payloads()`` / ``close()`` so it is a
+    drop-in replacement for the cloud VTM session inside the relay's
+    broadcast reader. ``iter_payloads()`` yields MPEG-PS bytes, exactly
+    like the cloud path, so the rest of the pipeline (PesParser -> ffmpeg)
+    is unchanged. LAN protocol credit: albrzmr (see cpd7/__init__.py).
+    """
+
+    def __init__(self, api: "Hp7Api", serial: str, channel: int = 1) -> None:
+        self._api = api
+        self._serial = serial
+        self._channel = channel
+        self._client: Any = None
+        self._decoder: Any = None
+        self._closed = False
+
+    def start(self) -> "Cpd7LanSource":
+        """Open the LAN session (blocking — run in an executor)."""
+        from .cpd7 import Cpd7LanClient, StreamDecoder
+
+        key = self._api.fetch_lan_aes_key(self._serial)
+        local_ip = self._api.get_local_ip(self._serial)
+        if not local_ip:
+            raise RuntimeError(
+                f"could not resolve LAN IP for {self._serial} "
+                "(device not on this network?)"
+            )
+        related = self._api.get_related_device(self._serial)
+        client = Cpd7LanClient(local_ip, related, key, channel=self._channel)
+        client.start()
+        self._client = client
+        self._decoder = StreamDecoder(client.ecdh_priv)
+        _LOGGER.info(
+            "Hp7StreamRelay: LAN source up (serial=%s ip=%s)",
+            self._serial, local_ip,
+        )
+        return self
+
+    @property
+    def streamssn(self) -> str:
+        return f"lan:{self._serial}"
+
+    def iter_payloads(self):
+        """Yield MPEG-PS payloads decoded from the LAN play socket."""
+        empty_strikes = 0
+        while not self._closed:
+            buf = self._client.read_chunk()
+            if not buf:
+                empty_strikes += 1
+                # Tolerate brief gaps; give up after sustained silence.
+                if empty_strikes > 3:
+                    break
+                continue
+            empty_strikes = 0
+            self._decoder.feed(buf)
+            out = self._decoder.take()
+            if out:
+                yield out
+
+    def close(self) -> None:
+        self._closed = True
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._client = None
+
+
+class _PreStartedSource:
+    """Wrap an already-started source so a second ``start()`` is a no-op.
+
+    Used by the "auto" path, which starts the LAN source eagerly to probe
+    whether it works before committing the broadcast reader to it.
+    """
+
+    def __init__(self, src: Any) -> None:
+        self._src = src
+
+    def start(self) -> Any:
+        return self._src
+
+    def iter_payloads(self):
+        return self._src.iter_payloads()
+
+    def close(self) -> None:
+        self._src.close()
+
+    @property
+    def streamssn(self) -> str:
+        return getattr(self._src, "streamssn", "lan")
+
 VIDEO_STREAM_ID = 0xE0
 AUDIO_STREAM_ID = 0xC0
 
@@ -251,11 +346,16 @@ class Hp7StreamRelay:
         listen_port: int = 0,
         aggressive_mpegts: bool = False,
         video_codec: str = "auto",
+        stream_source: str = "cloud",
     ) -> None:
         self._api = api
         self._serial = serial
         self._channel = channel
         self._ffmpeg_path = ffmpeg_path
+        # Stream source: "cloud" (VTM relay), "local" (CPD7 LAN), or "auto"
+        # (try LAN, fall back to cloud). LAN bypasses the cloud entirely and
+        # works on firmware whose VTM channel never pushes (#33/#36/#37).
+        self._stream_source = (stream_source or "cloud").lower()
         # Configured codec: "auto" | "h264" | "hevc". "auto" inspects the
         # first NAL units off the broadcast and sets _detected_codec; the
         # other two force it. Newer HP7 (HPD7) streams HEVC (#36, #37).
@@ -340,6 +440,39 @@ class Hp7StreamRelay:
     # Shared VTM pre-warm
     # ------------------------------------------------------------------
 
+    async def _open_source(self, loop, ezviz_client):
+        """Open the configured stream source (cloud VTM or CPD7 LAN).
+
+        Returns an object exposing ``start()`` / ``iter_payloads()`` /
+        ``close()``. For "auto" the LAN path is tried first and the cloud
+        VTM is used as fallback.
+        """
+        def _open_cloud():
+            return open_cloud_stream(
+                ezviz_client, self._serial, channel=self._channel
+            )
+
+        def _open_lan():
+            return Cpd7LanSource(self._api, self._serial, channel=self._channel)
+
+        if self._stream_source == "cloud":
+            return await loop.run_in_executor(None, _open_cloud)
+        if self._stream_source == "local":
+            return await loop.run_in_executor(None, _open_lan)
+        # auto: prefer LAN, fall back to cloud on any LAN failure.
+        try:
+            src = await loop.run_in_executor(None, _open_lan)
+            # Probe the LAN handshake now so a failure falls back to cloud
+            # before we commit the broadcast reader to it.
+            await loop.run_in_executor(None, src.start)
+            return _PreStartedSource(src)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.info(
+                "Hp7StreamRelay: LAN source unavailable (%s) — falling back "
+                "to cloud VTM (serial=%s)", exc, self._serial,
+            )
+            return await loop.run_in_executor(None, _open_cloud)
+
     async def prewarm(self) -> None:
         """Open (or extend) a shared VTM session that future HA Stream
         clients can reuse instead of paying the cloud handshake cost.
@@ -371,18 +504,14 @@ class Hp7StreamRelay:
                     raise RuntimeError(
                         "EzvizClient unavailable after ensure_client()"
                     )
-                vtm = await loop.run_in_executor(
-                    None,
-                    lambda: open_cloud_stream(
-                        ezviz_client, self._serial, channel=self._channel
-                    ),
-                )
+                vtm = await self._open_source(loop, ezviz_client)
                 info = await loop.run_in_executor(None, vtm.start)
                 self._consecutive_failures = 0
                 self._last_error = None
                 _LOGGER.info(
-                    "Hp7StreamRelay: pre-warm VTM up (serial=%s ssn=%s)",
+                    "Hp7StreamRelay: pre-warm source up (serial=%s src=%s ssn=%s)",
                     self._serial,
+                    self._stream_source,
                     getattr(info, "streamssn", "?"),
                 )
             except Exception as exc:
@@ -863,6 +992,7 @@ async def async_setup_live_entities(
 
     aggressive_mpegts = bool(data.get("aggressive_mpegts", False))
     video_codec = str(data.get("video_codec") or "auto")
+    stream_source = str(data.get("stream_source") or "cloud")
 
     relay = Hp7StreamRelay(
         api=api,
@@ -871,6 +1001,7 @@ async def async_setup_live_entities(
         listen_port=relay_port,
         aggressive_mpegts=aggressive_mpegts,
         video_codec=video_codec,
+        stream_source=stream_source,
     )
     await relay.start()
     data["live_relay"] = relay
