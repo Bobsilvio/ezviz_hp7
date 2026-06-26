@@ -184,16 +184,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload a config entry (e.g. after an options change).
 
-    Must delegate to ``hass.config_entries.async_reload`` rather than
-    calling unload + setup by hand: HA drives the LOADED -> UNLOAD ->
-    SETUP_IN_PROGRESS state machine there, and
-    ``async_config_entry_first_refresh`` is only legal in
-    SETUP_IN_PROGRESS. Calling async_setup_entry directly left the entry
-    in LOADED and raised "called when config entry state is LOADED",
-    which then cascaded into "Config entry was never loaded!" on the next
-    unload.
+    Delegates to ``hass.config_entries.async_reload`` (which drives the
+    LOADED -> UNLOAD -> SETUP_IN_PROGRESS state machine, so
+    ``async_config_entry_first_refresh`` is legal) — but **schedules** it
+    instead of awaiting inline. Awaiting async_reload directly from the
+    update listener deadlocks during bootstrap: the listener can fire
+    while setup still holds the entry lock, and since our setup does slow
+    cloud calls (login / euauth), HA's startup waits on it and times out
+    ("Setup timed out for bootstrap waiting on async_reload_entry").
+    Scheduling lets the listener return immediately; the reload runs once
+    the lock is free.
     """
-    await hass.config_entries.async_reload(entry.entry_id)
+    hass.async_create_task(
+        hass.config_entries.async_reload(entry.entry_id),
+        f"ezviz_hp7 reload {entry.entry_id}",
+    )
 
 
 async def async_remove_config_entry_device(
