@@ -594,23 +594,35 @@ class Hp7StreamRelay:
                 if not body:
                     continue
                 if self._active_lan:
-                    # LAN path: the decoder already emits complete MPEG-PS
-                    # (multiplexed video + audio). Fan it out raw to a single
-                    # queue — ffmpeg demuxes it with one input. Splitting it
-                    # into separate video/audio PES inputs and assuming AAC
-                    # froze the stream after a few seconds because the LAN
-                    # audio is MP2, not AAC (#36 digregoriovalerio).
+                    # LAN path: the decoder emits complete MPEG-PS (muxed
+                    # video + audio). Fan the raw feed out for the VIDEO
+                    # (one ffmpeg `-f mpeg` input, demuxed internally) AND
+                    # separately extract the AUDIO PES (0xC0) — the LAN
+                    # MPEG-PS PMT mislabels the audio as MP2 but it's
+                    # actually AAC ADTS (confirmed from a capture: ff f1
+                    # ... = AAC LC 16 kHz mono). ffmpeg can't decode it as
+                    # MP2, so we feed the extracted AAC to a second input
+                    # instead. Video stays a clean raw passthrough; audio
+                    # comes from the de-mislabelled PES.
                     v_bytes += len(body)
                     for q in list(self._sub_raw_qs):
                         try:
                             q.put_nowait(body)
                         except queue.Full:
                             pass
+                    for stream_id, payload in parser.feed(body):
+                        if stream_id == AUDIO_STREAM_ID and payload:
+                            a_bytes += len(payload)
+                            for q in list(self._sub_a_qs):
+                                try:
+                                    q.put_nowait(payload)
+                                except queue.Full:
+                                    pass
                     if v_bytes >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
-                            "%d B subs=%d",
-                            v_bytes, len(self._sub_raw_qs),
+                            "%d B audio=%d B subs=%d",
+                            v_bytes, a_bytes, len(self._sub_raw_qs),
                         )
                         next_v_log = v_bytes + 256 * 1024
                     continue
@@ -759,6 +771,7 @@ class Hp7StreamRelay:
         lan = self._active_lan
         if lan:
             self._sub_raw_qs.append(raw_q)
+            self._sub_a_qs.append(a_q)  # de-mislabelled AAC audio
         else:
             self._sub_v_qs.append(v_q)
             self._sub_a_qs.append(a_q)
@@ -780,7 +793,9 @@ class Hp7StreamRelay:
                 # clean and stable and revisit audio once the real codec is
                 # identified from a capture.
                 raw_port = _free_local_port()
+                a_port = _free_local_port()
                 raw_listener = _start_local_listener(raw_port)
+                a_listener = _start_local_listener(a_port)
                 # video_codec=hevc transcodes to H.264 so HA's WebRTC path
                 # shows a picture (HEVC copy = grey screen, #36 hehsni).
                 # hevc_copy / h264 / auto pass the elementary stream through
@@ -794,8 +809,13 @@ class Hp7StreamRelay:
                     "-analyzeduration", "1000000", "-probesize", "1000000",
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
-                    "-map", "0:v:0",
-                    "-an",
+                    "-analyzeduration", "200000", "-probesize", "200000",
+                    "-f", "aac",
+                    "-i", f"tcp://127.0.0.1:{a_port}",
+                    # Video from the raw MPEG-PS input (its mislabelled MP2
+                    # audio is ignored, not mapped); audio from the extracted
+                    # AAC input.
+                    "-map", "0:v:0", "-map", "1:a:0",
                 ]
                 if lan_transcode:
                     cmd += [
@@ -806,6 +826,7 @@ class Hp7StreamRelay:
                 else:
                     cmd += ["-c:v", "copy"]
                 cmd += [
+                    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                     "-max_interleave_delta", "0",
                     "-mpegts_flags", "+resend_headers",
                     "-pat_period", "1",
@@ -908,7 +929,13 @@ class Hp7StreamRelay:
                     name=f"hp7-lan-send-{self._serial}",
                     daemon=True,
                 )
-                threads = [raw_sender_t]
+                a_sender_t = threading.Thread(
+                    target=_sender_thread,
+                    args=(a_listener, a_q, stop_event, "audio"),
+                    name=f"hp7-lan-asend-{self._serial}",
+                    daemon=True,
+                )
+                threads = [raw_sender_t, a_sender_t]
             else:
                 v_sender_t = threading.Thread(
                     target=_sender_thread,
