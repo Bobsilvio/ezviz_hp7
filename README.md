@@ -52,7 +52,7 @@ Remove unused devices to free at least one slot.
   - 🚪 Unlock **gate** (lock #1 by default)
 - **Cameras**
   - 📷 **Last-alarm snapshot** (fetched from EZVIZ cloud)
-  - 🎥 **Live video** (`camera.<...>_live`) — H.264 720p video + AAC 16 kHz mono audio via the EZVIZ VTM cloud relay, served to HA's Stream component as MPEG-TS. Works over WAN, no port forwarding, no go2rtc required.
+  - 🎥 **Live video** (`camera.<...>_live`) — H.264 **and HEVC**, via the **EZVIZ VTM cloud relay** (works over WAN) **or a direct LAN stream** (CPD7, bypasses the cloud, lower latency). Two delivery modes: **WebRTC/HLS** (with audio) or **MJPEG** (codec-agnostic, robust for HEVC + multiple viewers). See the *Live video* section below for the full option matrix.
 - **Switches**
   - 🔔 `chime_sound` — doorbell button chime on the camera unit
   - 🔔 `chime_sound_monitor` — chime on each configured indoor monitor (multi-monitor friendly — HP7 bifamigliare)
@@ -142,22 +142,46 @@ action:
 
 - Currently supports **one HP7 / CP7 device per account entry** (multi-device support planned — multiple devices can be added today by repeating the config-entry setup).
 - The chime switch reads back state via cloud polling — changes made from the EZVIZ app appear after the next poll cycle.
-- Two-way audio (talkback) is not implemented; the cloud VTM relay carries only the inbound microphone leg and isn't yet exposed as a Home Assistant audio track.
+- Two-way audio (talkback) is not implemented. Inbound audio is carried on the **`webrtc`** stream mode (AAC); the **`mjpeg`** mode is video-only.
 
 ---
 
-## 📺 Live video — native VTM cloud relay
+## 📺 Live video
 
-The HP7 / CP7 don't expose RTSP or ONVIF and they don't register on the Hik-Connect UDP P2P cloud (only server-grade Hikvision NVRs do). The official EZVIZ app streams these doorbells through the **VTM cloud relay**: a TCP `ysproto` session that delivers MPEG-PS (H.264 video + audio) over a regional EZVIZ server.
+The HP7 / CP7 don't expose RTSP or ONVIF and don't register on the Hik-Connect UDP P2P cloud. A `camera.ezviz_hp7_<serial>_live` entity exposes the live stream, and the integration can pull it **two ways** — pick per device in **Settings → Devices → EZVIZ HP7 / CP7 → Configure**.
 
-A `camera.ezviz_hp7_<serial>_live` entity exposes that live stream. Under the hood the integration:
+### Stream source: `cloud` vs `local` vs `auto`
 
-1. Reuses the EZVIZ session already authenticated by the polling coordinator — no extra login, no risk of cascading account lockouts.
-2. Calls `pylocalapi.cloud_stream.open_cloud_stream` (vendored from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi)) to bootstrap the VTM stream URL, run the handshake / redirect chain and pull MPEG-PS payloads.
-3. Pumps those payloads through a local `ffmpeg -f mpeg -c:v copy -f mpegts` subprocess that exposes the stream on a `127.0.0.1` TCP port.
-4. The Home Assistant Stream component connects to that port, demuxes the MPEG-TS, and serves HLS / WebRTC to the frontend.
+| Source | How it works | When to use |
+|---|---|---|
+| **`cloud`** (default) | EZVIZ **VTM cloud relay** — a TCP `ysproto` session delivering MPEG-PS over a regional EZVIZ server. Built on [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi). | HA isn't on the same LAN as the doorbell, or the firmware pushes cleanly to the cloud. |
+| **`local`** | **Direct LAN** stream (CPD7 protocol — ports 9010/9020, AES-128-CBC control, ECDH + ChaCha20 media). Bypasses the cloud entirely. Reverse engineered by [albrzmr](https://github.com/albrzmr/ezviz_hp7). | HA is on the **same network** as the doorbell. Works on firmware whose VTM channel never pushes (CP5 / some HP7). Lower latency, no cloud. |
+| **`auto`** | Try `local` first, fall back to `cloud`. | Default-friendly choice when on the LAN. |
 
-A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic.
+> **`local` requires Image/Video Encryption to be OFF** in the EZVIZ app (device Settings). With encryption on, the camera accepts the connection but never emits plaintext bytes. The integration surfaces a clear hint if it detects this.
+
+### Stream mode: `webrtc` vs `mjpeg`
+
+| Mode | Delivery | Audio | HEVC | Notes |
+|---|---|---|---|---|
+| **`webrtc`** (default) | HA Stream / go2rtc (HLS/WebRTC) | ✅ | needs transcode to H.264 | Low latency + audio. Browsers can't decode HEVC over WebRTC, so HEVC firmware is transcoded. |
+| **`mjpeg`** | per-viewer `ffmpeg` → motion-JPEG, piped straight to the browser | ❌ | **native** (decoded to JPEG) | Codec-agnostic, no go2rtc, rock-solid for multiple simultaneous viewers. One ffmpeg per viewer. Adapted from [albrzmr](https://github.com/albrzmr/ezviz_hp7). |
+
+If you hit a grey/black screen on HEVC firmware, a frozen 2nd viewer, or go2rtc "Producer missing url" errors, switch **Stream mode = `mjpeg`** — it sidesteps the WebRTC/go2rtc layer entirely.
+
+### Video codec: `auto` / `h264` / `hevc` / `hevc_copy`
+
+Newer HP7 (HPD7) and CP7 firmware stream **HEVC/H.265**; older HP7 streams H.264. `auto` detects it. On the WebRTC path, `hevc` transcodes to H.264 (browser-friendly); `hevc_copy` passes H.265 through untouched for HEVC-capable players (Safari, Frigate). On the MJPEG path the codec doesn't matter (ffmpeg decodes either to JPEG).
+
+### Model / firmware support
+
+| Model | Cloud | Local (LAN) |
+|---|---|---|
+| HP7 (H.264) | ✅ | ✅ |
+| HP7 / HPD7 (HEVC) | ✅ (transcode or mjpeg) | ✅ |
+| CP5 / CP7 | needs encryption OFF | ✅ (encryption OFF) |
+
+A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic. The resolved LAN IP + AES key are cached so the local stream rides out transient EZVIZ cloud 504s.
 
 ### Exposing the live stream as RTSP (go2rtc / Frigate)
 
