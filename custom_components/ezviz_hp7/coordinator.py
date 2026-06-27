@@ -6,7 +6,10 @@ import logging
 from datetime import timedelta
 from typing import Any, TYPE_CHECKING
 
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import (
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from .const import UPDATE_INTERVAL_SEC
 
@@ -87,9 +90,18 @@ class Hp7Coordinator(DataUpdateCoordinator):
         (RFID card id, picture id, etc.) and embed it under
         ``latest_alarm_detail``.
         """
-        data = await self.hass.async_add_executor_job(
-            self.api.get_status, self.serial, self.monitor_serial
-        )
+        try:
+            data = await self.hass.async_add_executor_job(
+                self.api.get_status, self.serial, self.monitor_serial
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The EZVIZ cloud is frequently flaky (504 Gateway Timeout /
+            # euauth connect timeouts). Surface those as a transient
+            # UpdateFailed — HA marks entities unavailable for this tick and
+            # retries next cycle, with a quiet WARNING instead of a full
+            # "Unexpected error" ERROR traceback every time their cloud
+            # hiccups.
+            raise UpdateFailed(f"EZVIZ cloud fetch failed: {exc}") from exc
 
         alarm_time = data.get("last_alarm_time")
         if alarm_time and alarm_time != self._last_alarm_time:
