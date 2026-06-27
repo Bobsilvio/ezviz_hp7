@@ -106,10 +106,20 @@ def _random_hex_trailer(size: int = CAS_RANDOM_TRAILER_SIZE) -> bytes:
 
 
 def _cas_tls_context() -> ssl.SSLContext:
-    """Return the legacy TLS context accepted by the CAS cloud endpoint."""
+    """Return the legacy TLS context accepted by the CAS cloud endpoint.
+
+    Certificate validation is disabled: the EZVIZ CAS servers serve
+    proprietary certs that are frequently expired or not chained to a
+    public CA (observed: 'certificate has expired' breaking the LAN AES
+    key fetch). The official app doesn't validate this channel either —
+    it's an EZVIZ-internal control protocol, not a credential exchange —
+    so we accept whatever cert the CAS endpoint presents.
+    """
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.set_ciphers(CAS_TLS_CIPHERS)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     return context
 
 

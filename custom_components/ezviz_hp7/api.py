@@ -65,6 +65,9 @@ class Hp7Api:
         # serial -> (ChimeMusic dict, monotonic_ts). Short-TTL cache so the
         # five chime getters in one coordinator tick share one HTTP fetch.
         self._chime_config_cache: dict[str, tuple[dict[str, Any], float]] = {}
+        # serial -> consecutive ChimeMusic failures (cache as dead after N
+        # even when the error message is empty).
+        self._chime_fail_counts: dict[str, int] = {}
         # Serials for which EZVIZ told us "device does not exist". We
         # cache them in-memory for the session so we stop hammering the
         # ChimeMusic endpoint on every 30s coordinator tick (#33 — old
@@ -430,13 +433,21 @@ class Hp7Api:
             )
             # Heuristic: cache "not found" answers for the whole session
             # so we don't re-issue the same losing request every poll.
-            text = str(exc).lower()
+            # Some failures surface with an EMPTY message (the pylocalapi
+            # HTTPError stringifies to ''), so we also cache any serial that
+            # fails N times in a row — otherwise a phantom monitor serial
+            # (e.g. CP5's BE9259083, #33) spams ~10 GETs every tick forever.
+            text = (str(exc) or repr(exc)).lower()
+            self._chime_fail_counts[serial] = (
+                self._chime_fail_counts.get(serial, 0) + 1
+            )
             if (
                 "2000" in text
                 or "not exist" in text
                 or "不存在" in text
                 or "403" in text
                 or "forbidden" in text
+                or self._chime_fail_counts[serial] >= 3
             ):
                 self._chime_dead_serials.add(serial)
                 _LOGGER.info(
