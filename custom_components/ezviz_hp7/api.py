@@ -59,6 +59,9 @@ class Hp7Api:
         # authorises this client) and is stable until the doorbell is
         # re-paired, so we cache it for the session.
         self._lan_aes_cache: dict[str, tuple[bytes, float]] = {}
+        # bare_serial -> last good LAN IP (survives cloud 504s, see
+        # get_local_ip).
+        self._lan_ip_cache: dict[str, str] = {}
         # Serials for which EZVIZ told us "device does not exist". We
         # cache them in-memory for the session so we stop hammering the
         # ChimeMusic endpoint on every 30s coordinator tick (#33 — old
@@ -301,17 +304,35 @@ class Hp7Api:
             self._lan_aes_cache.pop(self._bare_serial(serial), None)
 
     def get_local_ip(self, serial: str) -> str | None:
-        """Resolve the doorbell's LAN IP from its CONNECTION metadata."""
-        self.ensure_client()
-        if not self._client:
-            return None
+        """Resolve the doorbell's LAN IP from its CONNECTION metadata.
+
+        Cached per session: the LAN stream path must keep working even when
+        the EZVIZ cloud is slow / returns 504 (get_device_infos -> pagelist
+        can time out). Once we've resolved the IP once, reuse it so the LAN
+        source doesn't depend on the cloud being healthy on every open.
+        """
+        bare = self._bare_serial(serial)
         try:
+            self.ensure_client()
+            if not self._client:
+                raise RuntimeError("client unavailable")
             from .pylocalapi.local_stream import _local_sdk_endpoint_from_client
 
             endpoint = _local_sdk_endpoint_from_client(self._client, serial)
             host = getattr(endpoint, "host", None)
-            return str(host) if host else None
+            if host:
+                self._lan_ip_cache[bare] = str(host)
+                return str(host)
+            raise RuntimeError("no host in CONNECTION metadata")
         except Exception as exc:  # noqa: BLE001
+            cached = self._lan_ip_cache.get(bare)
+            if cached:
+                _LOGGER.debug(
+                    "EZVIZ HP7: local IP resolve failed for %s (%s) — using "
+                    "cached %s",
+                    serial, exc, cached,
+                )
+                return cached
             _LOGGER.debug("EZVIZ HP7: local IP resolve failed for %s: %s", serial, exc)
             return None
 
