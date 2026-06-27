@@ -768,11 +768,17 @@ class Hp7StreamRelay:
         try:
             if lan:
                 # LAN: one input, the muxed MPEG-PS feed. ffmpeg demuxes it
-                # internally and copies video; re-encode audio to AAC since
-                # the LAN audio is MP2 and HA's mp4/HLS muxer wants AAC. This
-                # is what makes the LAN stream play past the first few
-                # seconds (#36 digregoriovalerio). Codec autodetected by the
+                # internally and copies video. Codec autodetected by the
                 # mpeg demuxer, so no -f h264/hevc guessing.
+                #
+                # Audio is dropped (-an) for now. The LAN MPEG-PS tags audio
+                # as MP2 but the frames have broken headers ("mp2 Header
+                # missing", #36 bob) — it's almost certainly AAC/G.711
+                # mislabelled, like the VTM cloud path. Undecodable MP2 can't
+                # be re-encoded to the AAC that HA's WebRTC needs, and copying
+                # raw MP2 doesn't play over WebRTC either, so we keep video
+                # clean and stable and revisit audio once the real codec is
+                # identified from a capture.
                 raw_port = _free_local_port()
                 raw_listener = _start_local_listener(raw_port)
                 # video_codec=hevc transcodes to H.264 so HA's WebRTC path
@@ -788,7 +794,8 @@ class Hp7StreamRelay:
                     "-analyzeduration", "1000000", "-probesize", "1000000",
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
-                    "-map", "0:v:0", "-map", "0:a:0?",
+                    "-map", "0:v:0",
+                    "-an",
                 ]
                 if lan_transcode:
                     cmd += [
@@ -799,7 +806,6 @@ class Hp7StreamRelay:
                 else:
                     cmd += ["-c:v", "copy"]
                 cmd += [
-                    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                     "-max_interleave_delta", "0",
                     "-mpegts_flags", "+resend_headers",
                     "-pat_period", "1",
