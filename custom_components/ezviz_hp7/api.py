@@ -62,6 +62,9 @@ class Hp7Api:
         # bare_serial -> last good LAN IP (survives cloud 504s, see
         # get_local_ip).
         self._lan_ip_cache: dict[str, str] = {}
+        # serial -> (ChimeMusic dict, monotonic_ts). Short-TTL cache so the
+        # five chime getters in one coordinator tick share one HTTP fetch.
+        self._chime_config_cache: dict[str, tuple[dict[str, Any], float]] = {}
         # Serials for which EZVIZ told us "device does not exist". We
         # cache them in-memory for the session so we stop hammering the
         # ChimeMusic endpoint on every 30s coordinator tick (#33 — old
@@ -408,6 +411,15 @@ class Hp7Api:
             return None
         if serial in self._chime_dead_serials:
             return None
+        # Short-TTL cache: get_status calls five chime getters (state,
+        # volume, ringtone, pir_state, pir_ringtone) per serial, each of
+        # which used to re-fetch the SAME ChimeMusic blob — ~10 identical
+        # HTTP GETs per device + monitor every 15s poll, hammering the
+        # EZVIZ cloud (log spam, 504 risk). Cache the blob briefly so the
+        # five getters in one tick share a single fetch.
+        cached = self._chime_config_cache.get(serial)
+        if cached is not None and (time.monotonic() - cached[1]) < 10.0:
+            return cached[0]
         try:
             result = self._client.get_dev_config(serial, 1, "ChimeMusic")
         except Exception as exc:  # noqa: BLE001
@@ -440,7 +452,10 @@ class Hp7Api:
             except ValueError as exc:
                 _LOGGER.warning("EZVIZ HP7: ChimeMusic value parse failed: %s", exc)
                 return None
-        return value if isinstance(value, dict) else None
+        if isinstance(value, dict):
+            self._chime_config_cache[serial] = (value, time.monotonic())
+            return value
+        return None
 
     def _set_chime_fields(self, serial: str, **fields: int) -> bool:
         """Patch one or more ChimeMusic fields, preserving the rest."""
@@ -458,6 +473,8 @@ class Hp7Api:
         try:
             resp = self._client._session.put(url, params=params, timeout=15)
             resp.raise_for_status()
+            # Drop the cached blob so the next read reflects the new value.
+            self._chime_config_cache.pop(serial, None)
             return True
         except (RequestException, ValueError) as exc:
             _LOGGER.error("EZVIZ HP7: _set_chime_fields failed: %s", exc)
