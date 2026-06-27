@@ -21,6 +21,9 @@ from .const import (
     CONF_STREAM_SOURCE,
     STREAM_SOURCE_CLOUD,
     STREAM_SOURCES,
+    CONF_STREAM_MODE,
+    STREAM_MODE_WEBRTC,
+    STREAM_MODES,
 )
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
@@ -101,6 +104,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ).lower()
     if stream_source not in STREAM_SOURCES:
         stream_source = STREAM_SOURCE_CLOUD
+    stream_mode = str(
+        entry.options.get(
+            CONF_STREAM_MODE,
+            entry.data.get(CONF_STREAM_MODE, STREAM_MODE_WEBRTC),
+        )
+        or STREAM_MODE_WEBRTC
+    ).lower()
+    if stream_mode not in STREAM_MODES:
+        stream_mode = STREAM_MODE_WEBRTC
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -136,6 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "aggressive_mpegts": aggressive_mpegts,
         "video_codec": video_codec,
         "stream_source": stream_source,
+        "stream_mode": stream_mode,
         "coordinator": coordinator,
     }
 

@@ -23,6 +23,9 @@ from .const import (
     CONF_STREAM_SOURCE,
     STREAM_SOURCE_CLOUD,
     STREAM_SOURCES,
+    CONF_STREAM_MODE,
+    STREAM_MODE_WEBRTC,
+    STREAM_MODES,
 )
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
 
@@ -333,6 +336,11 @@ class OptionsFlow(config_entries.OptionsFlow):
             ).lower()
             if source not in STREAM_SOURCES:
                 source = STREAM_SOURCE_CLOUD
+            mode = str(
+                user_input.get(CONF_STREAM_MODE) or STREAM_MODE_WEBRTC
+            ).lower()
+            if mode not in STREAM_MODES:
+                mode = STREAM_MODE_WEBRTC
             return self.async_create_entry(
                 title="",
                 data={
@@ -341,6 +349,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_AGGRESSIVE_MPEGTS: aggressive,
                     CONF_VIDEO_CODEC: codec,
                     CONF_STREAM_SOURCE: source,
+                    CONF_STREAM_MODE: mode,
                 },
             )
 
@@ -392,6 +401,16 @@ class OptionsFlow(config_entries.OptionsFlow):
         if current_source not in STREAM_SOURCES:
             current_source = STREAM_SOURCE_CLOUD
 
+        current_mode = str(
+            self.config_entry.options.get(
+                CONF_STREAM_MODE,
+                self.config_entry.data.get(CONF_STREAM_MODE, STREAM_MODE_WEBRTC),
+            )
+            or STREAM_MODE_WEBRTC
+        ).lower()
+        if current_mode not in STREAM_MODES:
+            current_mode = STREAM_MODE_WEBRTC
+
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
@@ -407,6 +426,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_STREAM_SOURCE, default=current_source
                 ): vol.In(STREAM_SOURCES),
+                vol.Optional(
+                    CONF_STREAM_MODE, default=current_mode
+                ): vol.In(STREAM_MODES),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

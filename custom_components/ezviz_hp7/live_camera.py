@@ -1045,11 +1045,20 @@ class Hp7LiveCamera(Camera):
     _attr_has_entity_name = True
     _attr_translation_key = "live"
 
-    def __init__(self, serial: str, model: str, relay: Hp7StreamRelay) -> None:
+    def __init__(
+        self,
+        serial: str,
+        model: str,
+        relay: Hp7StreamRelay,
+        stream_mode: str = "webrtc",
+        ffmpeg_path: str = "ffmpeg",
+    ) -> None:
         super().__init__()
         self._serial = serial
         self._model = model
         self._relay = relay
+        self._stream_mode = (stream_mode or "webrtc").lower()
+        self._ffmpeg_path = ffmpeg_path
         self._attr_unique_id = f"{DOMAIN}_{serial}_live"
 
     @property
@@ -1060,12 +1069,47 @@ class Hp7LiveCamera(Camera):
     @property
     def supported_features(self) -> int:
         from homeassistant.components.camera import CameraEntityFeature
+
+        # In MJPEG mode we don't advertise STREAM: HA would otherwise try to
+        # run its HLS/WebRTC pipeline (go2rtc) instead of calling our
+        # handle_async_mjpeg_stream. The MJPEG path is codec-agnostic and
+        # avoids the go2rtc/HEVC issues entirely.
+        if self._stream_mode == "mjpeg":
+            return CameraEntityFeature(0)
         return CameraEntityFeature.STREAM
 
     async def stream_source(self) -> Optional[str]:
+        if self._stream_mode == "mjpeg":
+            return None
         if self._relay.port == 0:
             return None
         return self._relay.stream_url
+
+    async def handle_async_mjpeg_stream(self, request):
+        """Serve a per-viewer MJPEG transcode of the live stream.
+
+        Used when stream_mode == 'mjpeg' — ffmpeg decodes whatever codec
+        the relay carries (H.264 or HEVC) into motion-JPEG, sidestepping
+        go2rtc/WebRTC and the HEVC grey-screen. Falls back to the base
+        implementation otherwise.
+        """
+        if self._stream_mode != "mjpeg":
+            return await super().handle_async_mjpeg_stream(request)
+        # Make sure the relay (and its shared upstream) is warm before we
+        # point ffmpeg at it.
+        try:
+            await self._relay.prewarm()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7LiveCamera: mjpeg prewarm failed: %s", exc)
+        if self._relay.port == 0:
+            return None
+        from .mjpeg import serve_mjpeg
+
+        return await serve_mjpeg(
+            request,
+            ffmpeg_path=self._ffmpeg_path,
+            upstream_url=self._relay.stream_url,
+        )
 
     async def async_camera_image(
         self,
@@ -1137,6 +1181,7 @@ async def async_setup_live_entities(
     aggressive_mpegts = bool(data.get("aggressive_mpegts", False))
     video_codec = str(data.get("video_codec") or "auto")
     stream_source = str(data.get("stream_source") or "cloud")
+    stream_mode = str(data.get("stream_mode") or "webrtc")
 
     relay = Hp7StreamRelay(
         api=api,
@@ -1150,7 +1195,9 @@ async def async_setup_live_entities(
     await relay.start()
     data["live_relay"] = relay
 
-    async_add_entities([Hp7LiveCamera(serial, model, relay)])
+    async_add_entities(
+        [Hp7LiveCamera(serial, model, relay, stream_mode=stream_mode)]
+    )
 
 
 async def async_unload_live_entities(

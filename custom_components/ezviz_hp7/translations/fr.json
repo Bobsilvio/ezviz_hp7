@@ -222,7 +222,8 @@
           "relay_port": "Port TCP fixe du relai (0 = aléatoire, recommandé 8554 pour go2rtc / mediamtx)",
           "aggressive_mpegts": "Compatibilité MPEG-TS agressive (activez si vous voyez 'Immediate exit requested' dans les logs ; sûr de laisser OFF par défaut)",
           "video_codec": "Codec vidéo (auto = détection ; hevc transcode le H.265 en H.264 pour WebRTC ; hevc_copy laisse passer le H.265 tel quel pour hôtes peu puissants / Frigate / Safari)",
-          "stream_source": "Source du flux (cloud = relais VTM EZVIZ ; local = LAN directe, contourne le cloud et corrige 'pas de direct' sur les firmwares qui n'émettent pas vers le cloud — nécessite HA sur le même réseau que le portier ; auto = essaie local puis cloud)"
+          "stream_source": "Source du flux (cloud = relais VTM EZVIZ ; local = LAN directe, contourne le cloud et corrige 'pas de direct' sur les firmwares qui n'émettent pas vers le cloud — nécessite HA sur le même réseau que le portier ; auto = essaie local puis cloud)",
+          "stream_mode": "Mode de diffusion (webrtc = HA Stream/go2rtc, avec audio + faible latence mais nécessite go2rtc et transcode le HEVC ; mjpeg = ffmpeg par spectateur en motion-JPEG, agnostique au codec et robuste pour HEVC/multi-spectateur mais sans audio)"
         }
       }
     }

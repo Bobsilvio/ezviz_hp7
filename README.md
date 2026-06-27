@@ -203,6 +203,7 @@ This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://g
 
 - **Cloud VTM relay** — built on [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi).
 - **Local LAN stream (CPD7)** — the direct-LAN streaming protocol (ports 9010/9020, AES-128-CBC control frames, ECDH P-256 key agreement, ChaCha20 media decryption) was reverse engineered by **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**. The `cpd7/` modules are vendored from that fork under its MIT license, with thanks. This integration adds the EZVIZ p2p-register + CAS step that unlocks the LAN AES key (the missing piece that returned `1052170` before).
+- **MJPEG live-view mode** — the codec-agnostic per-viewer ffmpeg→motion-JPEG approach (which sidesteps the go2rtc/WebRTC HEVC issues) is also adapted from **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**, with thanks. Selectable per device via the **Stream mode** option; the WebRTC/HLS path (with audio) remains the default.
 
 ---
 

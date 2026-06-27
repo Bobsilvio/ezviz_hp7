@@ -49,6 +49,18 @@ STREAM_SOURCE_LOCAL = "local"
 STREAM_SOURCE_AUTO = "auto"
 STREAM_SOURCES = [STREAM_SOURCE_CLOUD, STREAM_SOURCE_LOCAL, STREAM_SOURCE_AUTO]
 
+# How the live view is delivered to the frontend:
+#   webrtc — HA Stream/go2rtc (HLS/WebRTC): has audio + low latency, but
+#            depends on go2rtc and can't show HEVC without a transcode.
+#   mjpeg  — a per-viewer ffmpeg decodes the stream to motion-JPEG: fully
+#            codec-agnostic (H.264/HEVC), no go2rtc, robust for multiple
+#            viewers, but no audio and one ffmpeg per viewer. Adapted from
+#            albrzmr's fork.
+CONF_STREAM_MODE = "stream_mode"
+STREAM_MODE_WEBRTC = "webrtc"
+STREAM_MODE_MJPEG = "mjpeg"
+STREAM_MODES = [STREAM_MODE_WEBRTC, STREAM_MODE_MJPEG]
+
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
 
