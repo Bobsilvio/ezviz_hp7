@@ -294,9 +294,22 @@ class Hp7Api:
         session = (info or {}).get("Response", {}).get("Session", {})
         key_str = str(session.get("@Key") or "")
         if len(key_str) != 16:
-            result = (info or {}).get("Response", {}).get("Result")
+            result = str((info or {}).get("Response", {}).get("Result"))
+            # 1052175 (and friends): CAS accepts the request but refuses to
+            # mint a LAN key. Most common cause on CP5/CP7 is Image/Video
+            # Encryption being ON — the local stream isn't supported in that
+            # mode (PLAY succeeds but no plaintext bytes arrive). Surface a
+            # human hint instead of a bare CAS code. Credit @albrzmr.
+            hint = ""
+            if result in ("1052175", "1052170"):
+                hint = (
+                    " — if this is a CP5/CP7, turn OFF Image/Video Encryption "
+                    "in the EZVIZ app (device Settings); the LAN stream needs "
+                    "it disabled"
+                )
             raise RuntimeError(
-                f"invalid LAN AES key from CAS (Result={result}, key={key_str!r})"
+                f"invalid LAN AES key from CAS (Result={result}, "
+                f"key={key_str!r}){hint}"
             )
         key_bytes = key_str.encode("ascii")
         self._lan_aes_cache[bare] = (key_bytes, time.monotonic())
