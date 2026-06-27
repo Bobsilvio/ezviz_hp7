@@ -618,6 +618,22 @@ class Hp7StreamRelay:
                                     q.put_nowait(payload)
                                 except queue.Full:
                                     pass
+                        elif (
+                            stream_id == VIDEO_STREAM_ID
+                            and payload
+                            and self._detected_codec is None
+                        ):
+                            # Sniff h264 vs hevc so "auto" knows whether to
+                            # transcode on the LAN path too (CP7 streams HEVC,
+                            # which WebRTC can't show as a copy — #37 Quenbo).
+                            guess = _sniff_video_codec(payload)
+                            if guess is not None:
+                                self._detected_codec = guess
+                                _LOGGER.info(
+                                    "Hp7StreamRelay: detected LAN video "
+                                    "codec=%s (serial=%s)",
+                                    guess, self._serial,
+                                )
                     if v_bytes >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
@@ -796,12 +812,16 @@ class Hp7StreamRelay:
                 a_port = _free_local_port()
                 raw_listener = _start_local_listener(raw_port)
                 a_listener = _start_local_listener(a_port)
-                # video_codec=hevc transcodes to H.264 so HA's WebRTC path
-                # shows a picture (HEVC copy = grey screen, #36 hehsni).
-                # hevc_copy / h264 / auto pass the elementary stream through
-                # untouched (cheap; fine for H.264 firmware or HEVC-capable
-                # players / Frigate).
-                lan_transcode = self._video_codec == "hevc"
+                # Transcode HEVC -> H.264 so HA's WebRTC path shows a picture
+                # (HEVC copy = grey screen / decoder errors, #36 hehsni, #37
+                # Quenbo CP7). Transcode when the user forces hevc OR when
+                # auto sniffed HEVC off the stream. hevc_copy / h264 pass the
+                # elementary stream through untouched (HEVC-capable players,
+                # Frigate, H.264 firmware).
+                lan_transcode = self._video_codec == "hevc" or (
+                    self._video_codec == "auto"
+                    and self._detected_codec == "hevc"
+                )
                 cmd = [
                     self._ffmpeg_path,
                     "-hide_banner", "-loglevel", "error",
