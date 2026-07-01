@@ -223,9 +223,15 @@
           "aggressive_mpegts": "Compatibilidad MPEG-TS agresiva (activa si ves 'Immediate exit requested' en los logs; seguro dejarlo OFF por defecto)",
           "video_codec": "Códec de vídeo (auto = detectar; hevc transcodifica H.265 a H.264 para WebRTC; hevc_copy pasa H.265 sin tocar para hosts de baja potencia / Frigate / Safari)",
           "stream_source": "Fuente del stream (cloud = relay VTM EZVIZ; local = LAN directa, evita la nube y arregla 'sin directo' en firmware que no envía a la nube — requiere HA en la misma red que el videoportero; auto = prueba local y luego cloud)",
-          "stream_mode": "Modo de visualización (webrtc = HA Stream/go2rtc, con audio + baja latencia pero requiere go2rtc y transcodifica HEVC; mjpeg = ffmpeg por visor a motion-JPEG, agnóstico al códec y robusto para HEVC/multi-visor pero sin audio)"
+          "stream_mode": "Modo de visualización (mjpeg = por defecto: ffmpeg por visor a motion-JPEG, agnóstico al códec y robusto para HEVC/multi-visor pero sin audio; webrtc = HA Stream/go2rtc, con audio + baja latencia pero requiere go2rtc y no muestra HEVC sin transcodificar)"
         }
       }
+    }
+  },
+  "issues": {
+    "hevc_webrtc": {
+      "title": "Vídeo HEVC en modo WebRTC",
+      "description": "El portero {serial} transmite en HEVC/H.265, pero el Modo de visualización está en WebRTC. Los navegadores no muestran HEVC por WebRTC y go2rtc debe transcodificar, lo que falla en hosts poco potentes (pantalla gris o 'connection refused').\n\nAbre Configurar en la integración y pon Modo de visualización en 'mjpeg' (agnóstico al códec, sin go2rtc), luego Recargar. Como alternativa, para mantener WebRTC, pon Códec de vídeo en 'hevc' para transcodificar a H.264."
     }
   }
 }

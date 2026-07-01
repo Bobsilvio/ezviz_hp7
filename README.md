@@ -164,10 +164,10 @@ The HP7 / CP7 don't expose RTSP or ONVIF and don't register on the Hik-Connect U
 
 | Mode | Delivery | Audio | HEVC | Notes |
 |---|---|---|---|---|
-| **`webrtc`** (default) | HA Stream / go2rtc (HLS/WebRTC) | ✅ | needs transcode to H.264 | Low latency + audio. Browsers can't decode HEVC over WebRTC, so HEVC firmware is transcoded. |
-| **`mjpeg`** | per-viewer `ffmpeg` → motion-JPEG, piped straight to the browser | ❌ | **native** (decoded to JPEG) | Codec-agnostic, no go2rtc, rock-solid for multiple simultaneous viewers. One ffmpeg per viewer. Adapted from [albrzmr](https://github.com/albrzmr/ezviz_hp7). |
+| **`mjpeg`** (default) | per-viewer `ffmpeg` → motion-JPEG, piped straight to the browser | ❌ | **native** (decoded to JPEG) | Codec-agnostic, no go2rtc, rock-solid for multiple simultaneous viewers. One ffmpeg per viewer. Adapted from [albrzmr](https://github.com/albrzmr/ezviz_hp7). |
+| **`webrtc`** | HA Stream / go2rtc (HLS/WebRTC) | ✅ | needs transcode to H.264 | Low latency + audio. Browsers can't decode HEVC over WebRTC, so HEVC firmware is transcoded (needs go2rtc; fails on weak hosts). |
 
-If you hit a grey/black screen on HEVC firmware, a frozen 2nd viewer, or go2rtc "Producer missing url" errors, switch **Stream mode = `mjpeg`** — it sidesteps the WebRTC/go2rtc layer entirely.
+Since **0.13.7** the default is **`mjpeg`** — it's codec-agnostic and needs no go2rtc, so it works out of the box on HEVC firmware (the common case on newer HP7/HPD7/CP7) and with multiple viewers. Choose **`webrtc`** only if you specifically want inbound audio and low latency and your doorbell is H.264 (or you accept the HEVC transcode). If you're on WebRTC and the doorbell turns out to be HEVC, the integration raises a **Repairs** notice steering you to MJPEG.
 
 ### Video codec: `auto` / `h264` / `hevc` / `hevc_copy`
 
@@ -227,7 +227,7 @@ This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://g
 
 - **Cloud VTM relay** — built on [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi).
 - **Local LAN stream (CPD7)** — the direct-LAN streaming protocol (ports 9010/9020, AES-128-CBC control frames, ECDH P-256 key agreement, ChaCha20 media decryption) was reverse engineered by **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**. The `cpd7/` modules are vendored from that fork under its MIT license, with thanks. This integration adds the EZVIZ p2p-register + CAS step that unlocks the LAN AES key (the missing piece that returned `1052170` before).
-- **MJPEG live-view mode** — the codec-agnostic per-viewer ffmpeg→motion-JPEG approach (which sidesteps the go2rtc/WebRTC HEVC issues) is also adapted from **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**, with thanks. Selectable per device via the **Stream mode** option; the WebRTC/HLS path (with audio) remains the default.
+- **MJPEG live-view mode** — the codec-agnostic per-viewer ffmpeg→motion-JPEG approach (which sidesteps the go2rtc/WebRTC HEVC issues) is also adapted from **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**, with thanks. Selectable per device via the **Stream mode** option; since 0.13.7 it is the **default** (the WebRTC/HLS path with audio stays available).
 
 ---
 

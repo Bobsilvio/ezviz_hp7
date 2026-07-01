@@ -347,11 +347,19 @@ class Hp7StreamRelay:
         aggressive_mpegts: bool = False,
         video_codec: str = "auto",
         stream_source: str = "cloud",
+        stream_mode: str = "mjpeg",
+        hass: Any = None,
     ) -> None:
+        self._hass = hass
         self._api = api
         self._serial = serial
         self._channel = channel
         self._ffmpeg_path = ffmpeg_path
+        # Delivery mode ("webrtc" | "mjpeg"). Only used to warn once when we
+        # sniff HEVC while on WebRTC, where the browser can't decode a copy and
+        # go2rtc must transcode (grey screen / dial refused on weak hosts).
+        self._stream_mode = (stream_mode or "mjpeg").lower()
+        self._warned_hevc_webrtc = False
         # Stream source: "cloud" (VTM relay), "local" (CPD7 LAN), or "auto"
         # (try LAN, fall back to cloud). LAN bypasses the cloud entirely and
         # works on firmware whose VTM channel never pushes (#33/#36/#37).
@@ -396,6 +404,53 @@ class Hp7StreamRelay:
     @property
     def stream_url(self) -> str:
         return f"tcp://127.0.0.1:{self._port}"
+
+    def _warn_if_hevc_on_webrtc(self, codec: Optional[str]) -> None:
+        """Log a one-shot warning when HEVC is seen on the WebRTC path.
+
+        Browsers can't decode an HEVC copy over WebRTC, so go2rtc must
+        transcode; on weak hosts that fails with a grey screen or
+        'dial tcp ... connection refused' (#36 andresako). MJPEG mode
+        sidesteps this entirely and is now the default — steer the user there.
+        """
+        if (
+            codec == "hevc"
+            and self._stream_mode == "webrtc"
+            and not self._warned_hevc_webrtc
+        ):
+            self._warned_hevc_webrtc = True
+            _LOGGER.warning(
+                "Hp7StreamRelay: HEVC/H.265 detected while Stream mode is "
+                "'webrtc' (serial=%s). Browsers can't show HEVC over WebRTC and "
+                "go2rtc must transcode, which fails on weak hosts. Switch "
+                "Stream mode to 'mjpeg' (Configure) for a codec-agnostic, "
+                "go2rtc-free live view.",
+                self._serial,
+            )
+            # Surface it in the UI (Settings -> Repairs), not just the log.
+            # The sniff runs in the broadcast reader thread, so hop to the loop.
+            if self._hass is not None:
+                try:
+                    self._hass.loop.call_soon_threadsafe(self._raise_hevc_repair)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _raise_hevc_repair(self) -> None:
+        """Create a Repairs issue steering the user to MJPEG (loop thread)."""
+        try:
+            from homeassistant.helpers import issue_registry as ir
+
+            ir.async_create_issue(
+                self._hass,
+                DOMAIN,
+                f"hevc_webrtc_{self._serial}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="hevc_webrtc",
+                translation_placeholders={"serial": self._serial},
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7StreamRelay: could not raise HEVC repair: %s", exc)
 
     async def start(self) -> None:
         if self._server is not None:
@@ -634,6 +689,7 @@ class Hp7StreamRelay:
                                     "codec=%s (serial=%s)",
                                     guess, self._serial,
                                 )
+                                self._warn_if_hevc_on_webrtc(guess)
                     if v_bytes >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
@@ -656,6 +712,7 @@ class Hp7StreamRelay:
                                     "(serial=%s)",
                                     guess, self._serial,
                                 )
+                                self._warn_if_hevc_on_webrtc(guess)
                         for q in list(self._sub_v_qs):
                             try:
                                 q.put_nowait(payload)
@@ -1058,14 +1115,14 @@ class Hp7LiveCamera(Camera):
         serial: str,
         model: str,
         relay: Hp7StreamRelay,
-        stream_mode: str = "webrtc",
+        stream_mode: str = "mjpeg",
         ffmpeg_path: str = "ffmpeg",
     ) -> None:
         super().__init__()
         self._serial = serial
         self._model = model
         self._relay = relay
-        self._stream_mode = (stream_mode or "webrtc").lower()
+        self._stream_mode = (stream_mode or "mjpeg").lower()
         self._ffmpeg_path = ffmpeg_path
         self._attr_unique_id = f"{DOMAIN}_{serial}_live"
 
@@ -1189,7 +1246,7 @@ async def async_setup_live_entities(
     aggressive_mpegts = bool(data.get("aggressive_mpegts", False))
     video_codec = str(data.get("video_codec") or "auto")
     stream_source = str(data.get("stream_source") or "cloud")
-    stream_mode = str(data.get("stream_mode") or "webrtc")
+    stream_mode = str(data.get("stream_mode") or "mjpeg")
 
     relay = Hp7StreamRelay(
         api=api,
@@ -1199,7 +1256,17 @@ async def async_setup_live_entities(
         aggressive_mpegts=aggressive_mpegts,
         video_codec=video_codec,
         stream_source=stream_source,
+        stream_mode=stream_mode,
+        hass=hass,
     )
+    # If the user isn't on WebRTC, clear any stale HEVC-on-WebRTC repair.
+    if stream_mode != "webrtc":
+        try:
+            from homeassistant.helpers import issue_registry as ir
+
+            ir.async_delete_issue(hass, DOMAIN, f"hevc_webrtc_{serial}")
+        except Exception:  # noqa: BLE001
+            pass
     await relay.start()
     data["live_relay"] = relay
 

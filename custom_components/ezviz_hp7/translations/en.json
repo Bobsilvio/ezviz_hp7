@@ -223,9 +223,15 @@
           "aggressive_mpegts": "Aggressive MPEG-TS compatibility (enable if you see 'Immediate exit requested' in logs; safe to leave OFF by default)",
           "video_codec": "Video codec (auto = detect; hevc transcodes H.265 to H.264 for WebRTC; hevc_copy passes H.265 through untouched for low-power hosts / Frigate / Safari)",
           "stream_source": "Stream source (cloud = EZVIZ VTM relay; local = direct LAN, bypasses the cloud and fixes 'no live' on firmware that won't push to the cloud — needs HA on the same network as the doorbell; auto = try local then cloud)",
-          "stream_mode": "Live view delivery (webrtc = HA Stream/go2rtc, has audio + low latency but needs go2rtc and transcodes HEVC; mjpeg = per-viewer ffmpeg to motion-JPEG, codec-agnostic and robust for HEVC/multi-viewer but no audio)"
+          "stream_mode": "Live view delivery (mjpeg = default: per-viewer ffmpeg to motion-JPEG, codec-agnostic and robust for HEVC/multi-viewer but no audio; webrtc = HA Stream/go2rtc, has audio + low latency but needs go2rtc and can't show HEVC without transcoding)"
         }
       }
+    }
+  },
+  "issues": {
+    "hevc_webrtc": {
+      "title": "HEVC live view on WebRTC mode",
+      "description": "Doorbell {serial} streams HEVC/H.265, but Stream mode is set to WebRTC. Browsers can't show HEVC over WebRTC and go2rtc must transcode, which fails on weak hosts (grey screen or 'connection refused').\n\nOpen Configure on the integration and set Stream mode to 'mjpeg' (codec-agnostic, no go2rtc), then Reload. Alternatively, to keep WebRTC, set Video codec to 'hevc' to transcode to H.264."
     }
   }
 }

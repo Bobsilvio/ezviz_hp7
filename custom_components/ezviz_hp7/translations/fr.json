@@ -223,9 +223,15 @@
           "aggressive_mpegts": "Compatibilité MPEG-TS agressive (activez si vous voyez 'Immediate exit requested' dans les logs ; sûr de laisser OFF par défaut)",
           "video_codec": "Codec vidéo (auto = détection ; hevc transcode le H.265 en H.264 pour WebRTC ; hevc_copy laisse passer le H.265 tel quel pour hôtes peu puissants / Frigate / Safari)",
           "stream_source": "Source du flux (cloud = relais VTM EZVIZ ; local = LAN directe, contourne le cloud et corrige 'pas de direct' sur les firmwares qui n'émettent pas vers le cloud — nécessite HA sur le même réseau que le portier ; auto = essaie local puis cloud)",
-          "stream_mode": "Mode de diffusion (webrtc = HA Stream/go2rtc, avec audio + faible latence mais nécessite go2rtc et transcode le HEVC ; mjpeg = ffmpeg par spectateur en motion-JPEG, agnostique au codec et robuste pour HEVC/multi-spectateur mais sans audio)"
+          "stream_mode": "Mode de diffusion (mjpeg = par défaut : ffmpeg par spectateur en motion-JPEG, agnostique au codec et robuste pour HEVC/multi-spectateur mais sans audio ; webrtc = HA Stream/go2rtc, avec audio + faible latence mais nécessite go2rtc et n'affiche pas le HEVC sans transcodage)"
         }
       }
+    }
+  },
+  "issues": {
+    "hevc_webrtc": {
+      "title": "Flux HEVC en mode WebRTC",
+      "description": "Le portier {serial} diffuse en HEVC/H.265, mais le Mode de diffusion est réglé sur WebRTC. Les navigateurs n'affichent pas le HEVC via WebRTC et go2rtc doit transcoder, ce qui échoue sur les hôtes peu puissants (écran gris ou 'connection refused').\n\nOuvrez Configurer sur l'intégration et réglez le Mode de diffusion sur 'mjpeg' (agnostique au codec, sans go2rtc), puis Recharger. Sinon, pour garder WebRTC, réglez le Codec vidéo sur 'hevc' pour transcoder en H.264."
     }
   }
 }
