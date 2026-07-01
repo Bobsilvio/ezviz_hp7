@@ -827,9 +827,17 @@ class Hp7StreamRelay:
                     "-hide_banner", "-loglevel", "error",
                     "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
                     "-analyzeduration", "1000000", "-probesize", "1000000",
+                    # Re-timestamp from the wall clock so DTS starts at 0
+                    # instead of the device's uptime-based value, which is
+                    # already high and wraps the 33-bit MPEG-TS clock within
+                    # hours -> HA's stream worker aborts with "Timestamp
+                    # discontinuity" (#37 Quenbo). From 0 the wrap only
+                    # happens after ~26h of continuous streaming.
+                    "-use_wallclock_as_timestamps", "1",
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
                     "-analyzeduration", "200000", "-probesize", "200000",
+                    "-use_wallclock_as_timestamps", "1",
                     "-f", "aac",
                     "-i", f"tcp://127.0.0.1:{a_port}",
                     # Video from the raw MPEG-PS input (its mislabelled MP2
