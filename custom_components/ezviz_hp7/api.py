@@ -765,6 +765,23 @@ class Hp7Api:
                 sw_list = switches.get("switchStatusInfos") or []
             elif isinstance(switches, list):
                 sw_list = switches
+            # Diagnostic (#34): HPD7 name-plate LED isn't switch type 611 on
+            # some firmware, so the label_light switch reads Unknown and the
+            # toggle no-ops. Dump the switch types the device actually exposes
+            # so affected users can enable debug logging and report the real
+            # type for the label light.
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                try:
+                    dump = {
+                        int(sw.get("type", -1)): sw.get("enable")
+                        for sw in sw_list
+                        if isinstance(sw, dict)
+                    }
+                    _LOGGER.debug(
+                        "EZVIZ HP7: device %s SWITCH types→enable = %s", serial, dump
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             for sw in sw_list:
                 try:
                     s_type = int(sw.get("type", -1))
