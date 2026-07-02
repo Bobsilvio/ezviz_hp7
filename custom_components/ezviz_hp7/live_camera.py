@@ -410,6 +410,20 @@ class Hp7StreamRelay:
         """Video codec sniffed off the live stream ("h264"/"hevc"), or None."""
         return self._detected_codec
 
+    @property
+    def active_source(self) -> str:
+        """Which source is actually feeding the stream right now.
+
+        Reflects reality rather than the configured option: with source=auto
+        the relay may have fallen back cloud->local (or vice-versa), so report
+        what's live. Falls back to the configured value when nothing is open.
+        """
+        if self._active_lan:
+            return "local"
+        if self._shared_vtm is not None:
+            return "cloud"
+        return self._stream_source
+
     def _warn_if_hevc_on_webrtc(self, codec: Optional[str]) -> None:
         """Log a one-shot warning when HEVC is seen on the WebRTC path.
 
@@ -1161,6 +1175,24 @@ class Hp7LiveCamera(Camera):
         if self._stream_mode == "mjpeg":
             return CameraEntityFeature(0)
         return CameraEntityFeature.STREAM
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Surface what's actually driving the live view (source/mode/codec).
+
+        Lets the user see — and put an on-screen badge for — whether they're
+        on local vs cloud, WebRTC vs MJPEG, and H.264 vs HEVC, which is
+        otherwise invisible with source=auto / mode=auto.
+        """
+        codec = self._relay.detected_codec
+        if not codec:
+            cfg = self._relay._video_codec
+            codec = cfg if cfg and cfg != "auto" else "unknown"
+        return {
+            "stream_source": self._relay.active_source,
+            "stream_mode": self._stream_mode,
+            "video_codec": codec,
+        }
 
     async def stream_source(self) -> Optional[str]:
         if self._stream_mode == "mjpeg":
