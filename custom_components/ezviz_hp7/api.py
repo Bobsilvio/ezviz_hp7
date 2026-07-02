@@ -722,20 +722,26 @@ class Hp7Api:
     def _read_night_light_state(info: dict[str, Any]) -> bool | None:
         """Read the HPD7 name-plate LED from the IoT FEATURE tree (#34).
 
-        Path: FEATURE_INFO[local_index]["LightCtrl"]["NightLightEnable"].
-        Returns None when the device doesn't expose it (older HP7 that uses
-        SWITCH 611 instead).
+        The ``NightLightEnable`` flag lives under FEATURE_INFO but its nesting
+        varies by firmware: seen as FEATURE_INFO["1"]["LightCtrl"]["Night…"]
+        on one HPD7 and FEATURE_INFO["1"]["Video"]["LightCtrl"]["Night…"] on
+        another. Walk the whole tree and return the first value found.
+        Returns None when the device doesn't expose it (older HP7 uses SWITCH
+        611 instead).
         """
         feat = info.get("FEATURE_INFO")
-        if not isinstance(feat, dict):
-            return None
-        for _idx, node in feat.items():
-            if not isinstance(node, dict):
-                continue
-            lc = node.get("LightCtrl")
-            if isinstance(lc, dict) and "NightLightEnable" in lc:
-                return bool(lc.get("NightLightEnable"))
-        return None
+        result: list[bool] = []
+
+        def _walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k == "NightLightEnable" and not isinstance(v, (dict, list)):
+                        result.append(bool(v))
+                    else:
+                        _walk(v)
+
+        _walk(feat)
+        return result[0] if result else None
 
     def set_label_light(self, serial: str, enable: bool) -> bool:
         """Toggle the doorbell name/label LED.
@@ -752,51 +758,34 @@ class Hp7Api:
         if not self._client:
             return False
 
-        # Try several plausible IoT write shapes for the HPD7 NightLight. The
-        # exact schema isn't documented, so we attempt each and log the full
-        # outcome — the first that the cloud accepts wins, and the failures
-        # tell us (from the logs) which shape the firmware expects. Path is
-        # always LightCtrl/1/<domain>/<action>.
-        attempts = [
-            ("NightLightEnable", "NightLightEnable",
-             {"value": {"enabled": bool(enable)}}),
-            ("NightLightEnable", "NightLightEnable",
-             {"value": {"NightLightEnable": bool(enable)}}),
-            ("NightLightEnable", "NightLightEnable", {"value": bool(enable)}),
-            ("LightCtrl", "NightLightEnable",
-             {"value": {"enabled": bool(enable)}}),
-        ]
-        # Diagnostic build: try each shape (all target the same on/off value,
-        # so order doesn't matter) and log every outcome. Once we know which
-        # one the firmware accepts AND physically toggles the light, this
-        # collapses to that single call.
-        any_ok = False
-        for domain_id, action_id, value in attempts:
-            try:
-                resp = self._client.set_iot_feature(
-                    serial,
-                    resource_identifier="LightCtrl",
-                    local_index="1",
-                    domain_id=domain_id,
-                    action_id=action_id,
-                    value=value,
-                )
-                any_ok = True
-                _LOGGER.info(
-                    "EZVIZ HP7: label light IoT OK domain=%s action=%s "
-                    "value=%s -> %s",
-                    domain_id, action_id, value, resp,
-                )
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.warning(
-                    "EZVIZ HP7: label light IoT attempt failed "
-                    "(domain=%s action=%s value=%s): %s",
-                    domain_id, action_id, value, exc,
-                )
-        if any_ok:
+        # Attempt the IoT feature write (resource=Video, LightCtrl/
+        # NightLightEnable — the natural mapping of the read tree). NOTE:
+        # empirically, on a live HPD7 (CS-HPD7-R105-1K3, fw V5.3.6) every
+        # iot-feature/feature and iot-feature/action path variant is rejected
+        # with "设备不支持该功能" / "设备功能未报备" (device doesn't support /
+        # feature not declared). The night light there appears to be set
+        # locally by the paired indoor monitor, not over the cloud. We still
+        # try (in case other firmware accepts it) then fall back to SWITCH 611
+        # for older HP7, and log clearly so it's obvious when it's a no-op.
+        try:
+            resp = self._client.set_iot_feature(
+                serial,
+                resource_identifier="Video",
+                local_index="1",
+                domain_id="LightCtrl",
+                action_id="NightLightEnable",
+                value={"value": {"enabled": bool(enable)}},
+            )
+            _LOGGER.info(
+                "EZVIZ HP7: label light IoT OK enable=%s -> %s", enable, resp
+            )
             return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "EZVIZ HP7: label light IoT write not accepted (enable=%s): %s "
+                "— trying legacy switch 611", enable, exc,
+            )
 
-        # Legacy fallback: SWITCH type 611 (older HP7 that isn't HPD7).
         try:
             self._client.switch_status(
                 serial,
