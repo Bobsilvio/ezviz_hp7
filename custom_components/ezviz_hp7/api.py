@@ -757,14 +757,30 @@ class Hp7Api:
             if coerced is not None:
                 out["dnd_on"] = coerced
 
-        switches = info.get("SWITCH") or {}
-        if isinstance(switches, dict):
-            # `SWITCH` may map switchType → {enable: bool} OR be a list.
-            sw_list: list[dict[str, Any]] = []
-            if isinstance(switches, dict) and "switchStatusInfos" in switches:
+        # `SWITCH` from get_device_infos is the per-serial value of the
+        # pagelist SWITCH block. On real devices it's a **list** of
+        # {type, enable} entries; older/other shapes wrap it in a dict with
+        # "switchStatusInfos". Handle both — previously the whole block was
+        # gated on `isinstance(dict)`, so on devices that return a plain list
+        # (HPD7, #34) privacy/label_light were never parsed at all and the
+        # switches read Unknown.
+        switches = info.get("SWITCH")
+        sw_list: list[dict[str, Any]] = []
+        if isinstance(switches, list):
+            sw_list = switches
+        elif isinstance(switches, dict):
+            if "switchStatusInfos" in switches:
                 sw_list = switches.get("switchStatusInfos") or []
-            elif isinstance(switches, list):
-                sw_list = switches
+            else:
+                # dict keyed by switchType → {enable: ...} or bare bool.
+                for k, v in switches.items():
+                    try:
+                        t = int(k)
+                    except (TypeError, ValueError):
+                        continue
+                    enable = v.get("enable") if isinstance(v, dict) else v
+                    sw_list.append({"type": t, "enable": enable})
+        if sw_list:
             # Diagnostic (#34): HPD7 name-plate LED isn't switch type 611 on
             # some firmware, so the label_light switch reads Unknown and the
             # toggle no-ops. Dump the switch types the device actually exposes
