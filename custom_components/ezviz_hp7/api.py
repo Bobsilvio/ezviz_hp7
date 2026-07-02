@@ -775,6 +775,29 @@ class Hp7Api:
             if coerced is not None:
                 out["dnd_on"] = coerced
 
+        # Diagnostic (#34): on HPD7 the name-plate LED is NOT in the SWITCH
+        # block (type 611 stays False whether the light is on or off), so it
+        # must be an IoT-feature control. Surface any light/lamp/led-ish
+        # feature so we can find the right domain/action to toggle it.
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            try:
+                import json as _json
+
+                blob = _json.dumps(
+                    {k: info.get(k) for k in ("FEATURE", "FEATURE_INFO")},
+                    default=str,
+                )
+                hits = [
+                    kw for kw in ("light", "lamp", "led", "plate", "luminance")
+                    if kw in blob.lower()
+                ]
+                _LOGGER.debug(
+                    "EZVIZ HP7: device %s FEATURE keyword hits=%s FEATURE_INFO=%s",
+                    serial, hits, blob[:4000],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
         # `SWITCH` from get_device_infos is the per-serial value of the
         # pagelist SWITCH block. On real devices it's a **list** of
         # {type, enable} entries; older/other shapes wrap it in a dict with
