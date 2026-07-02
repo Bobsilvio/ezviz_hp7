@@ -758,15 +758,16 @@ class Hp7Api:
         if not self._client:
             return False
 
-        # Attempt the IoT feature write (resource=Video, LightCtrl/
-        # NightLightEnable — the natural mapping of the read tree). NOTE:
-        # empirically, on a live HPD7 (CS-HPD7-R105-1K3, fw V5.3.6) every
-        # iot-feature/feature and iot-feature/action path variant is rejected
-        # with "设备不支持该功能" / "设备功能未报备" (device doesn't support /
-        # feature not declared). The night light there appears to be set
-        # locally by the paired indoor monitor, not over the cloud. We still
-        # try (in case other firmware accepts it) then fall back to SWITCH 611
-        # for older HP7, and log clearly so it's obvious when it's a no-op.
+        # IoT feature write, schema confirmed on a live HPD7 (CS-HPD7-R105-1K3,
+        # fw V5.3.6) via the property-request error the cloud echoes back:
+        #   PUT /v3/iot-feature/feature/{serial}/Video/1/LightCtrl/NightLightEnable
+        #   body {"value": <bool>}   (Profile.Props type=boolean, access=rw)
+        # Two gotchas that cost the earlier attempts:
+        #   * the value must be a BARE boolean, not {"enabled": ...} — the
+        #     cloud replies "object found, boolean expected" otherwise;
+        #   * it only works against the COMPOSITE serial (doorbell-monitor,
+        #     with the dash); the bare doorbell serial returns 400. HA is set
+        #     up with the composite serial, so `serial` here is already right.
         try:
             resp = self._client.set_iot_feature(
                 serial,
@@ -774,7 +775,7 @@ class Hp7Api:
                 local_index="1",
                 domain_id="LightCtrl",
                 action_id="NightLightEnable",
-                value={"value": {"enabled": bool(enable)}},
+                value={"value": bool(enable)},
             )
             _LOGGER.info(
                 "EZVIZ HP7: label light IoT OK enable=%s -> %s", enable, resp
