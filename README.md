@@ -164,10 +164,11 @@ The HP7 / CP7 don't expose RTSP or ONVIF and don't register on the Hik-Connect U
 
 | Mode | Delivery | Audio | HEVC | Notes |
 |---|---|---|---|---|
-| **`mjpeg`** (default) | per-viewer `ffmpeg` → motion-JPEG, piped straight to the browser | ❌ | **native** (decoded to JPEG) | Codec-agnostic, no go2rtc, rock-solid for multiple simultaneous viewers. One ffmpeg per viewer. Adapted from [albrzmr](https://github.com/albrzmr/ezviz_hp7). |
+| **`auto`** (default) | picks the mode from the detected codec | — | — | Probes the video codec once at startup: **H.264 → `webrtc`**, **HEVC → `mjpeg`**. Falls back to `mjpeg` if the codec can't be determined. You don't need to know your doorbell's codec. |
+| **`mjpeg`** | per-viewer `ffmpeg` → motion-JPEG, piped straight to the browser | ❌ | **native** (decoded to JPEG) | Codec-agnostic, no go2rtc, rock-solid for multiple simultaneous viewers. One ffmpeg per viewer. Adapted from [albrzmr](https://github.com/albrzmr/ezviz_hp7). |
 | **`webrtc`** | HA Stream / go2rtc (HLS/WebRTC) | ✅ | needs transcode to H.264 | Low latency + audio. Browsers can't decode HEVC over WebRTC, so HEVC firmware is transcoded (needs go2rtc; fails on weak hosts). |
 
-Since **0.13.7** the default is **`mjpeg`** — it's codec-agnostic and needs no go2rtc, so it works out of the box on HEVC firmware (the common case on newer HP7/HPD7/CP7) and with multiple viewers. Choose **`webrtc`** only if you specifically want inbound audio and low latency and your doorbell is H.264 (or you accept the HEVC transcode). If you're on WebRTC and the doorbell turns out to be HEVC, the integration raises a **Repairs** notice steering you to MJPEG.
+Since **0.13.14** the default is **`auto`**: at startup it sniffs the codec and uses **`webrtc`** for H.264 doorbells (audio + low latency) and **`mjpeg`** for HEVC ones (which WebRTC can't display without transcoding). This means live video works out of the box regardless of model, without you having to know the codec. Force a specific mode if you prefer — e.g. `webrtc` to always get audio, or `mjpeg` for multi-viewer robustness. If you force `webrtc` on an HEVC doorbell, the integration raises a **Repairs** notice steering you back to `auto`/`mjpeg`.
 
 ### Video codec: `auto` / `h264` / `hevc` / `hevc_copy`
 

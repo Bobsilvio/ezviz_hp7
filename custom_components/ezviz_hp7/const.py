@@ -56,10 +56,16 @@ STREAM_SOURCES = [STREAM_SOURCE_CLOUD, STREAM_SOURCE_LOCAL, STREAM_SOURCE_AUTO]
 #            codec-agnostic (H.264/HEVC), no go2rtc, robust for multiple
 #            viewers, but no audio and one ffmpeg per viewer. Adapted from
 #            albrzmr's fork.
+#   auto   — probe the video codec once at startup and pick the mode:
+#            H.264 → webrtc (audio + low latency), HEVC → mjpeg (browsers
+#            can't show HEVC over WebRTC). Falls back to mjpeg (the safe,
+#            always-works choice) if the codec can't be determined. This is
+#            the default so users don't have to know their doorbell's codec.
 CONF_STREAM_MODE = "stream_mode"
+STREAM_MODE_AUTO = "auto"
 STREAM_MODE_WEBRTC = "webrtc"
 STREAM_MODE_MJPEG = "mjpeg"
-STREAM_MODES = [STREAM_MODE_WEBRTC, STREAM_MODE_MJPEG]
+STREAM_MODES = [STREAM_MODE_AUTO, STREAM_MODE_WEBRTC, STREAM_MODE_MJPEG]
 
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]

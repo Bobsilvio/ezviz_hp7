@@ -405,6 +405,11 @@ class Hp7StreamRelay:
     def stream_url(self) -> str:
         return f"tcp://127.0.0.1:{self._port}"
 
+    @property
+    def detected_codec(self) -> Optional[str]:
+        """Video codec sniffed off the live stream ("h264"/"hevc"), or None."""
+        return self._detected_codec
+
     def _warn_if_hevc_on_webrtc(self, codec: Optional[str]) -> None:
         """Log a one-shot warning when HEVC is seen on the WebRTC path.
 
@@ -1260,7 +1265,7 @@ async def async_setup_live_entities(
     aggressive_mpegts = bool(data.get("aggressive_mpegts", False))
     video_codec = str(data.get("video_codec") or "auto")
     stream_source = str(data.get("stream_source") or "cloud")
-    stream_mode = str(data.get("stream_mode") or "mjpeg")
+    stream_mode = str(data.get("stream_mode") or "auto")
 
     relay = Hp7StreamRelay(
         api=api,
@@ -1273,20 +1278,65 @@ async def async_setup_live_entities(
         stream_mode=stream_mode,
         hass=hass,
     )
-    # If the user isn't on WebRTC, clear any stale HEVC-on-WebRTC repair.
-    if stream_mode != "webrtc":
+    await relay.start()
+    data["live_relay"] = relay
+
+    # "auto": probe the actual video codec once and pick the delivery mode so
+    # users don't have to know it — H.264 → webrtc (audio + low latency),
+    # HEVC → mjpeg (WebRTC can't show HEVC). This avoids the recurring "grey
+    # screen / no video" reports on HEVC firmware. The probe reuses the same
+    # prewarmed session the first viewer will use, so it isn't wasted; if the
+    # codec can't be determined (device offline / cloud-only firmware that
+    # never emits), we fall back to mjpeg, which always works.
+    effective_mode = stream_mode
+    if stream_mode == "auto":
+        effective_mode = await _resolve_auto_stream_mode(relay)
+        relay._stream_mode = effective_mode
+        data["stream_mode_effective"] = effective_mode
+
+    # Only WebRTC can hit the HEVC-can't-play situation; clear stale repairs
+    # for every other resolved mode.
+    if effective_mode != "webrtc":
         try:
             from homeassistant.helpers import issue_registry as ir
 
             ir.async_delete_issue(hass, DOMAIN, f"hevc_webrtc_{serial}")
         except Exception:  # noqa: BLE001
             pass
-    await relay.start()
-    data["live_relay"] = relay
 
     async_add_entities(
-        [Hp7LiveCamera(serial, model, relay, stream_mode=stream_mode)]
+        [Hp7LiveCamera(serial, model, relay, stream_mode=effective_mode)]
     )
+
+
+async def _resolve_auto_stream_mode(relay: "Hp7StreamRelay") -> str:
+    """Probe the video codec and map it to a delivery mode.
+
+    Returns "webrtc" for H.264, "mjpeg" for HEVC or when the codec can't be
+    sniffed within the timeout (mjpeg is the safe, codec-agnostic default).
+    """
+    from .const import STREAM_MODE_MJPEG, STREAM_MODE_WEBRTC
+
+    try:
+        await relay.prewarm()
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Hp7StreamRelay: auto-probe prewarm failed: %s", exc)
+        return STREAM_MODE_MJPEG
+
+    # Poll up to ~10 s for the broadcast reader to sniff the first keyframe.
+    codec: Optional[str] = None
+    for _ in range(50):
+        codec = relay.detected_codec
+        if codec is not None:
+            break
+        await asyncio.sleep(0.2)
+
+    mode = STREAM_MODE_WEBRTC if codec == "h264" else STREAM_MODE_MJPEG
+    _LOGGER.info(
+        "Hp7StreamRelay: auto stream mode — detected codec=%s → %s (serial=%s)",
+        codec or "unknown", mode, relay._serial,
+    )
+    return mode
 
 
 async def async_unload_live_entities(

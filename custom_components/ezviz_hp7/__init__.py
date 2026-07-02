@@ -22,7 +22,7 @@ from .const import (
     STREAM_SOURCE_CLOUD,
     STREAM_SOURCES,
     CONF_STREAM_MODE,
-    STREAM_MODE_MJPEG,
+    STREAM_MODE_AUTO,
     STREAM_MODES,
 )
 from .api import Hp7Api
@@ -107,12 +107,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stream_mode = str(
         entry.options.get(
             CONF_STREAM_MODE,
-            entry.data.get(CONF_STREAM_MODE, STREAM_MODE_MJPEG),
+            entry.data.get(CONF_STREAM_MODE, STREAM_MODE_AUTO),
         )
-        or STREAM_MODE_MJPEG
+        or STREAM_MODE_AUTO
     ).lower()
     if stream_mode not in STREAM_MODES:
-        stream_mode = STREAM_MODE_MJPEG
+        stream_mode = STREAM_MODE_AUTO
 
     try:
         api = Hp7Api(username, password, region, token=token)

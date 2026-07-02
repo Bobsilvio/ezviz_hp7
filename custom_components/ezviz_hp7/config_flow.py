@@ -24,7 +24,7 @@ from .const import (
     STREAM_SOURCE_CLOUD,
     STREAM_SOURCES,
     CONF_STREAM_MODE,
-    STREAM_MODE_MJPEG,
+    STREAM_MODE_AUTO,
     STREAM_MODES,
 )
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
@@ -337,10 +337,10 @@ class OptionsFlow(config_entries.OptionsFlow):
             if source not in STREAM_SOURCES:
                 source = STREAM_SOURCE_CLOUD
             mode = str(
-                user_input.get(CONF_STREAM_MODE) or STREAM_MODE_MJPEG
+                user_input.get(CONF_STREAM_MODE) or STREAM_MODE_AUTO
             ).lower()
             if mode not in STREAM_MODES:
-                mode = STREAM_MODE_MJPEG
+                mode = STREAM_MODE_AUTO
             return self.async_create_entry(
                 title="",
                 data={
@@ -404,12 +404,12 @@ class OptionsFlow(config_entries.OptionsFlow):
         current_mode = str(
             self.config_entry.options.get(
                 CONF_STREAM_MODE,
-                self.config_entry.data.get(CONF_STREAM_MODE, STREAM_MODE_MJPEG),
+                self.config_entry.data.get(CONF_STREAM_MODE, STREAM_MODE_AUTO),
             )
-            or STREAM_MODE_MJPEG
+            or STREAM_MODE_AUTO
         ).lower()
         if current_mode not in STREAM_MODES:
-            current_mode = STREAM_MODE_MJPEG
+            current_mode = STREAM_MODE_AUTO
 
         schema = vol.Schema(
             {

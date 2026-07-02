@@ -223,7 +223,7 @@
           "aggressive_mpegts": "Compatibilidad MPEG-TS agresiva (activa si ves 'Immediate exit requested' en los logs; seguro dejarlo OFF por defecto)",
           "video_codec": "Códec de vídeo (auto = detectar; hevc transcodifica H.265 a H.264 para WebRTC; hevc_copy pasa H.265 sin tocar para hosts de baja potencia / Frigate / Safari)",
           "stream_source": "Fuente del stream (cloud = relay VTM EZVIZ; local = LAN directa, evita la nube y arregla 'sin directo' en firmware que no envía a la nube — requiere HA en la misma red que el videoportero; auto = prueba local y luego cloud)",
-          "stream_mode": "Modo de visualización (mjpeg = por defecto: ffmpeg por visor a motion-JPEG, agnóstico al códec y robusto para HEVC/multi-visor pero sin audio; webrtc = HA Stream/go2rtc, con audio + baja latencia pero requiere go2rtc y no muestra HEVC sin transcodificar)"
+          "stream_mode": "Modo de visualización (auto = por defecto: detecta el códec y elige solo — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, con audio + baja latencia pero no muestra HEVC sin transcodificar; mjpeg = ffmpeg por visor a motion-JPEG, agnóstico al códec y robusto para HEVC/multi-visor pero sin audio)"
         }
       }
     }

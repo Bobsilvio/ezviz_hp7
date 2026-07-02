@@ -223,7 +223,7 @@
           "aggressive_mpegts": "Aggressive MPEG-TS compatibility (enable if you see 'Immediate exit requested' in logs; safe to leave OFF by default)",
           "video_codec": "Video codec (auto = detect; hevc transcodes H.265 to H.264 for WebRTC; hevc_copy passes H.265 through untouched for low-power hosts / Frigate / Safari)",
           "stream_source": "Stream source (cloud = EZVIZ VTM relay; local = direct LAN, bypasses the cloud and fixes 'no live' on firmware that won't push to the cloud — needs HA on the same network as the doorbell; auto = try local then cloud)",
-          "stream_mode": "Live view delivery (mjpeg = default: per-viewer ffmpeg to motion-JPEG, codec-agnostic and robust for HEVC/multi-viewer but no audio; webrtc = HA Stream/go2rtc, has audio + low latency but needs go2rtc and can't show HEVC without transcoding)"
+          "stream_mode": "Live view delivery (auto = default: detects the codec and picks for you — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, has audio + low latency but can't show HEVC without transcoding; mjpeg = per-viewer ffmpeg to motion-JPEG, codec-agnostic and robust for HEVC/multi-viewer but no audio)"
         }
       }
     }
