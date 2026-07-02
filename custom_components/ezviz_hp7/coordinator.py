@@ -73,6 +73,13 @@ class Hp7Coordinator(DataUpdateCoordinator):
         self.api = api
         self.serial = serial
         self.monitor_serial = monitor_serial
+        # The EZVIZ cloud (pagelist) hiccups often — 504 / euauth timeouts /
+        # brief rate-limits — usually recovering within a cycle or two. Rather
+        # than blanking every cloud-backed entity to "unknown" on the first
+        # blip, tolerate a short run of failures by holding the last-good data,
+        # and only surface UpdateFailed (entities unavailable) once the outage
+        # is sustained. 4 cycles * 15 s ≈ 1 min of grace (#36 andresako).
+        self._fail_streak: int = 0
         self._last_alarm_time: str | None = None
         self._last_alarm_detail: dict[str, Any] | None = None
         # Key list cache (RFID cards / face / palm enrolments) — refresh
@@ -90,18 +97,46 @@ class Hp7Coordinator(DataUpdateCoordinator):
         (RFID card id, picture id, etc.) and embed it under
         ``latest_alarm_detail``.
         """
+        # A blip is either an exception OR an empty dict (get_status swallows
+        # RequestException and returns {}). Treat both the same: hold the last
+        # good data for a short grace window before degrading to unavailable.
         try:
             data = await self.hass.async_add_executor_job(
                 self.api.get_status, self.serial, self.monitor_serial
             )
+            failure: str | None = None if data else "empty status from cloud"
         except Exception as exc:  # noqa: BLE001
-            # The EZVIZ cloud is frequently flaky (504 Gateway Timeout /
-            # euauth connect timeouts). Surface those as a transient
-            # UpdateFailed — HA marks entities unavailable for this tick and
-            # retries next cycle, with a quiet WARNING instead of a full
-            # "Unexpected error" ERROR traceback every time their cloud
-            # hiccups.
-            raise UpdateFailed(f"EZVIZ cloud fetch failed: {exc}") from exc
+            data = None
+            failure = str(exc)
+
+        if failure is not None:
+            self._fail_streak += 1
+            # Keep serving the previous cycle's values while the outage is
+            # short and we actually have something to serve.
+            if self._fail_streak <= 4 and self.data:
+                _LOGGER.warning(
+                    "EZVIZ cloud fetch failed (%d in a row), keeping last "
+                    "known values: %s",
+                    self._fail_streak,
+                    failure,
+                )
+                return self.data
+            # Right past the grace window, try re-authenticating once: an
+            # expired session would otherwise fail every poll until restart,
+            # which matches "unknown for hours" reports (#36). Do it a single
+            # time so we don't hammer login (and trip rate-limits) during a
+            # genuine cloud outage.
+            if self._fail_streak == 5:
+                _LOGGER.warning(
+                    "EZVIZ cloud failing for %d cycles — forcing re-login",
+                    self._fail_streak,
+                )
+                await self.hass.async_add_executor_job(self.api.force_relogin)
+            # Sustained outage (or no prior data): mark entities unavailable.
+            raise UpdateFailed(f"EZVIZ cloud fetch failed: {failure}")
+
+        # Success — clear the streak and continue with fresh data.
+        self._fail_streak = 0
 
         alarm_time = data.get("last_alarm_time")
         if alarm_time and alarm_time != self._last_alarm_time:

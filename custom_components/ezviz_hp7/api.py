@@ -128,6 +128,24 @@ class Hp7Api:
             _LOGGER.error("EZVIZ HP7 authentication failed: %s", exc)
             raise ValueError(f"Authentication failed: {exc}") from exc
 
+    def force_relogin(self) -> bool:
+        """Drop the client and re-authenticate from stored credentials.
+
+        ``ensure_client`` short-circuits when a client already exists and
+        never re-logins, so an expired session/token would otherwise keep
+        failing every poll until HA restarts. The coordinator calls this once
+        after a sustained cloud-failure streak to self-heal a dead token.
+        Returns True if re-login succeeded.
+        """
+        self._client = None
+        self._token = None
+        try:
+            self.ensure_client()
+            return self._client is not None
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: forced re-login failed: %s", exc)
+            return False
+
     def login(self, sms_code: int | None = None) -> bool:
         """Authenticate with EZVIZ server.
 
