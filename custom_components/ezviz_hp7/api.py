@@ -1018,8 +1018,13 @@ class Hp7Api:
 
         try:
             camera = EzvizCamera(self._client, serial)
-            cam_status = camera.status(refresh=True)
-            wifi_info = cam_status.get("WIFI", {})
+            # Both can be None on some devices (the paired monitor reports
+            # WIFI: null since it has no radio of its own — #composite serial),
+            # and `.get(key, {})` returns that None instead of the default when
+            # the key is present, so guard with `or {}` to avoid
+            # "'NoneType' object has no attribute 'get'".
+            cam_status = camera.status(refresh=True) or {}
+            wifi_info = cam_status.get("WIFI") or {}
 
             _LOGGER.debug("Device status received for %s", serial)
 
