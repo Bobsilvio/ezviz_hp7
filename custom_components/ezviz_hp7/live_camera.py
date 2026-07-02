@@ -875,15 +875,29 @@ class Hp7StreamRelay:
                 # auto sniffed HEVC off the stream. hevc_copy / h264 pass the
                 # elementary stream through untouched (HEVC-capable players,
                 # Frigate, H.264 firmware).
-                lan_transcode = self._video_codec == "hevc" or (
-                    self._video_codec == "auto"
-                    and self._detected_codec == "hevc"
+                # In MJPEG mode the per-viewer ffmpeg decodes whatever codec
+                # to JPEG itself, so transcoding HEVC->H.264 here is pure waste
+                # (a double decode+encode) and its decoder was the source of
+                # the "VPS 0 does not exist" errors on HPD7 (#39). Only the
+                # WebRTC path actually needs H.264, so gate the transcode on it.
+                lan_transcode = self._stream_mode == "webrtc" and (
+                    self._video_codec == "hevc"
+                    or (
+                        self._video_codec == "auto"
+                        and self._detected_codec == "hevc"
+                    )
                 )
                 cmd = [
                     self._ffmpeg_path,
                     "-hide_banner", "-loglevel", "error",
-                    "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
-                    "-analyzeduration", "1000000", "-probesize", "1000000",
+                    # No +nobuffer on the input: nobuffer pins analyzeduration
+                    # to 0, so ffmpeg gives up before it sees a full HEVC IDR
+                    # with its VPS/SPS/PPS and can't determine the frame size
+                    # ("Could not find codec parameters ... unspecified size",
+                    # #39 HPD7). A large analyzeduration/probesize is a ceiling,
+                    # not a fixed wait — it starts as soon as params are known.
+                    "-fflags", "+genpts", "-flags", "low_delay",
+                    "-analyzeduration", "10000000", "-probesize", "10000000",
                     # Re-timestamp from the wall clock so DTS starts at 0
                     # instead of the device's uptime-based value, which is
                     # already high and wraps the 33-bit MPEG-TS clock within

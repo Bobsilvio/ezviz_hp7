@@ -50,13 +50,23 @@ def _build_ffmpeg_cmd(
     rendering them, which is what painted the first couple of seconds grey
     on the LAN path (decoding started on pre-keyframe slack). Credit
     albrzmr for the tuning.
+
+    ``-analyzeduration`` / ``-probesize`` are set explicitly and large:
+    HPD7 HEVC starts mid-GOP and ffmpeg needs to see a full IDR with its
+    VPS/SPS/PPS parameter sets before it can determine the frame size
+    (#39 alex66a-hub — "Could not find codec parameters ... unspecified
+    size"). We must NOT use ``-fflags +nobuffer`` here: nobuffer forces
+    analyzeduration to 0, so ffmpeg gives up before the first keyframe.
+    These are a *ceiling*, not a fixed wait — ffmpeg starts emitting as
+    soon as it has decoded the parameter sets.
     """
     return [
         ffmpeg_path,
         "-loglevel", "warning",
+        "-analyzeduration", "10000000",
+        "-probesize", "10000000",
         "-f", "mpegts",
-        "-fflags", "+discardcorrupt+nobuffer",
-        "-flags", "low_delay",
+        "-fflags", "+discardcorrupt",
         "-i", upstream_url,
         "-an",
         "-c:v", "mjpeg",
