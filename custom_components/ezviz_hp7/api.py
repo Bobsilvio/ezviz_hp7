@@ -752,46 +752,61 @@ class Hp7Api:
         if not self._client:
             return False
 
-        # Does this device expose the NightLight IoT feature?
-        has_night = False
-        try:
-            info = self._client.get_device_infos(serial) or {}
-            has_night = self._read_night_light_state(info) is not None
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("EZVIZ HP7: label light feature probe failed: %s", exc)
-
-        if has_night:
-            # Best-effort IoT write. Path: LightCtrl/<idx>/NightLightEnable.
+        # Try several plausible IoT write shapes for the HPD7 NightLight. The
+        # exact schema isn't documented, so we attempt each and log the full
+        # outcome — the first that the cloud accepts wins, and the failures
+        # tell us (from the logs) which shape the firmware expects. Path is
+        # always LightCtrl/1/<domain>/<action>.
+        attempts = [
+            ("NightLightEnable", "NightLightEnable",
+             {"value": {"enabled": bool(enable)}}),
+            ("NightLightEnable", "NightLightEnable",
+             {"value": {"NightLightEnable": bool(enable)}}),
+            ("NightLightEnable", "NightLightEnable", {"value": bool(enable)}),
+            ("LightCtrl", "NightLightEnable",
+             {"value": {"enabled": bool(enable)}}),
+        ]
+        # Diagnostic build: try each shape (all target the same on/off value,
+        # so order doesn't matter) and log every outcome. Once we know which
+        # one the firmware accepts AND physically toggles the light, this
+        # collapses to that single call.
+        any_ok = False
+        for domain_id, action_id, value in attempts:
             try:
                 resp = self._client.set_iot_feature(
                     serial,
                     resource_identifier="LightCtrl",
                     local_index="1",
-                    domain_id="NightLightEnable",
-                    action_id="NightLightEnable",
-                    value={"value": {"enabled": bool(enable)}},
+                    domain_id=domain_id,
+                    action_id=action_id,
+                    value=value,
                 )
+                any_ok = True
                 _LOGGER.info(
-                    "EZVIZ HP7: label light (IoT NightLight) set enable=%s -> %s",
-                    enable, resp,
+                    "EZVIZ HP7: label light IoT OK domain=%s action=%s "
+                    "value=%s -> %s",
+                    domain_id, action_id, value, resp,
                 )
-                return True
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.warning(
-                    "EZVIZ HP7: label light IoT write failed (enable=%s): %s",
-                    enable, exc,
+                    "EZVIZ HP7: label light IoT attempt failed "
+                    "(domain=%s action=%s value=%s): %s",
+                    domain_id, action_id, value, exc,
                 )
-                # Fall through to the switch attempt below.
+        if any_ok:
+            return True
 
+        # Legacy fallback: SWITCH type 611 (older HP7 that isn't HPD7).
         try:
             self._client.switch_status(
                 serial,
                 self._LABEL_LIGHT_SWITCH_TYPE,
                 bool(enable),
             )
+            _LOGGER.info("EZVIZ HP7: label light via SWITCH 611 enable=%s", enable)
             return True
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("EZVIZ HP7: label light switch failed: %s", exc)
+            _LOGGER.warning("EZVIZ HP7: label light switch 611 failed: %s", exc)
             return False
 
     @staticmethod
