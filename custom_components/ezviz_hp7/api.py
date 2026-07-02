@@ -743,6 +743,64 @@ class Hp7Api:
         _walk(feat)
         return result[0] if result else None
 
+    @staticmethod
+    def _read_feature_states(info: dict[str, Any]) -> dict[str, Any]:
+        """Extract read-only feature states from FEATURE_INFO (#34).
+
+        These are not cloud-writable on the HPD7, so they're surfaced as
+        sensors only. Keys are set only when the device reports them, so
+        devices that lack a feature don't get a phantom entity.
+        """
+        out: dict[str, Any] = {}
+        feat = info.get("FEATURE_INFO")
+        if not isinstance(feat, dict):
+            return out
+
+        def find_first(key: str) -> Any:
+            stack: list[Any] = [feat]
+            while stack:
+                obj = stack.pop()
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if k == key:
+                            return v
+                        stack.append(v)
+                elif isinstance(obj, list):
+                    stack.extend(obj)
+            return None
+
+        mute = find_first("MuteEnabled")
+        if isinstance(mute, dict) and "enabled" in mute:
+            out["mute_on"] = bool(mute["enabled"])
+
+        micv = find_first("MicrophoneVolume")
+        if isinstance(micv, (int, float)) and not isinstance(micv, bool):
+            out["mic_volume"] = int(micv)
+
+        loi = find_first("LoiteringEnable")
+        if isinstance(loi, dict) and "enable" in loi:
+            out["loitering_on"] = bool(loi["enable"])
+
+        scfg = find_first("StrangerDetectionCfg")
+        if isinstance(scfg, dict):
+            lst = scfg.get("faceContrastList")
+            if isinstance(lst, list) and lst and isinstance(lst[0], dict):
+                fc = lst[0].get("faceContrast")
+                if isinstance(fc, dict) and "enable" in fc:
+                    out["stranger_detection_on"] = bool(fc["enable"])
+
+        dapp = find_first("DownloadedAPP")
+        if isinstance(dapp, dict):
+            apps = dapp.get("APP")
+            if isinstance(apps, list):
+                for a in apps:
+                    if isinstance(a, dict) and "human_detect" in str(
+                        a.get("APPID", "")
+                    ):
+                        out["human_detection_on"] = bool(a.get("enabled"))
+                        break
+        return out
+
     def set_label_light(self, serial: str, enable: bool) -> bool:
         """Toggle the doorbell name/label LED.
 
@@ -921,6 +979,12 @@ class Hp7Api:
         night = self._read_night_light_state(info)
         if night is not None:
             out["label_light_on"] = night
+
+        # Read-only feature states from the IoT FEATURE tree (#34). Unlike the
+        # night light, these are not cloud-writable on the HPD7 (the device
+        # rejects the writes), so they're surfaced as sensors only, and only
+        # when the device actually reports them.
+        out.update(self._read_feature_states(info))
 
         status = info.get("STATUS") or {}
         if isinstance(status, dict):

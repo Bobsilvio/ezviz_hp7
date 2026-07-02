@@ -9,7 +9,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
 )
 from homeassistant.core import callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -29,6 +29,16 @@ PULSE_SECONDS = 3
 # Simple binary sensors mapped directly to coordinator data keys
 SIMPLE_MAP: list[tuple[str, str, BinarySensorDeviceClass]] = [
     ("motion", "motion_trigger", BinarySensorDeviceClass.MOTION),
+]
+
+# Read-only IoT feature states (#34), added only when the device reports them.
+# device_class None → generic on/off (these aren't motion/occupancy triggers,
+# they're config-state readouts).
+FEATURE_MAP: list[tuple[str, str, BinarySensorDeviceClass | None]] = [
+    ("mute_on", "feature_mute", None),
+    ("loitering_on", "feature_loitering", None),
+    ("stranger_detection_on", "feature_stranger_detection", None),
+    ("human_detection_on", "feature_human_detection", None),
 ]
 
 # Alarm sensors that trigger for PULSE_SECONDS when specific alarm names appear
@@ -237,6 +247,19 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
                 icon,
             )
         )
+
+    # Read-only feature states (#34) — mute, loitering, stranger & human
+    # detection. Not cloud-writable on the HPD7, so exposed as sensors, and
+    # only when the device actually reports them (key present after the first
+    # coordinator refresh) to avoid phantom "unknown" entities elsewhere.
+    cdata = coordinator.data or {}
+    for key, translation_key, device_class in FEATURE_MAP:
+        if cdata.get(key) is not None:
+            ent = Hp7BinarySimple(
+                coordinator, serial, model, key, translation_key, device_class
+            )
+            ent._attr_entity_category = EntityCategory.DIAGNOSTIC
+            entities.append(ent)
 
     async_add_entities(entities)
 

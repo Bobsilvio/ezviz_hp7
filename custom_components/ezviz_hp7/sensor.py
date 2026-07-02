@@ -124,6 +124,16 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
             entity._attr_entity_registry_enabled_default = False
         entities.append(entity)
 
+    # Read-only IoT feature value (#34): microphone volume, added only when the
+    # device reports it (key present after the first coordinator refresh).
+    if (coordinator.data or {}).get("mic_volume") is not None:
+        mic = Hp7Sensor(
+            coordinator, serial, model,
+            "mic_volume", "mic_volume", None, "%", "mdi:microphone", None,
+        )
+        mic._attr_entity_category = EntityCategory.DIAGNOSTIC
+        entities.append(mic)
+
     async_add_entities(entities)
 
 

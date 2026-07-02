@@ -90,6 +90,9 @@
           "yes": "Oui",
           "no": "Non"
         }
+      },
+      "mic_volume": {
+        "name": "Volume Microphone"
       }
     },
     "binary_sensor": {
@@ -125,6 +128,18 @@
       },
       "unlock_app": {
         "name": "Déverrouillage App"
+      },
+      "feature_mute": {
+        "name": "Muet"
+      },
+      "feature_loitering": {
+        "name": "Détection Rôdeur"
+      },
+      "feature_stranger_detection": {
+        "name": "Détection Inconnus"
+      },
+      "feature_human_detection": {
+        "name": "Détection Humaine"
       }
     },
     "button": {

@@ -90,6 +90,9 @@
           "yes": "sì",
           "no": "no"
         }
+      },
+      "mic_volume": {
+        "name": "Volume Microfono"
       }
     },
     "binary_sensor": {
@@ -125,6 +128,18 @@
       },
       "unlock_app": {
         "name": "Sblocco App"
+      },
+      "feature_mute": {
+        "name": "Muto"
+      },
+      "feature_loitering": {
+        "name": "Rilevamento Sosta"
+      },
+      "feature_stranger_detection": {
+        "name": "Rilevamento Estranei"
+      },
+      "feature_human_detection": {
+        "name": "Rilevamento Persone"
       }
     },
     "button": {
