@@ -718,15 +718,71 @@ class Hp7Api:
                 return value[0]
         return None
 
-    def set_label_light(self, serial: str, enable: bool) -> bool:
-        """Toggle the doorbell name/label LED (CHIME_INDICATOR_LIGHT switch).
+    @staticmethod
+    def _read_night_light_state(info: dict[str, Any]) -> bool | None:
+        """Read the HPD7 name-plate LED from the IoT FEATURE tree (#34).
 
-        Issue #24 — controls the LED that illuminates the name tag plate on
-        the HP7 doorbell button. Switch type 611 per pylocalapi constants.
+        Path: FEATURE_INFO[local_index]["LightCtrl"]["NightLightEnable"].
+        Returns None when the device doesn't expose it (older HP7 that uses
+        SWITCH 611 instead).
+        """
+        feat = info.get("FEATURE_INFO")
+        if not isinstance(feat, dict):
+            return None
+        for _idx, node in feat.items():
+            if not isinstance(node, dict):
+                continue
+            lc = node.get("LightCtrl")
+            if isinstance(lc, dict) and "NightLightEnable" in lc:
+                return bool(lc.get("NightLightEnable"))
+        return None
+
+    def set_label_light(self, serial: str, enable: bool) -> bool:
+        """Toggle the doorbell name/label LED.
+
+        Two control channels exist depending on model (#24, #34):
+          * Older HP7 exposes it as SWITCH type 611 (CHIME_INDICATOR_LIGHT).
+          * HPD7 exposes it as the IoT feature LightCtrl / NightLightEnable —
+            type 611 is present but inert there.
+        We try the IoT feature first when the device reports it, then fall
+        back to the switch. The exact IoT write schema is still being
+        confirmed on real hardware, so the attempt logs its full outcome.
         """
         self.ensure_client()
         if not self._client:
             return False
+
+        # Does this device expose the NightLight IoT feature?
+        has_night = False
+        try:
+            info = self._client.get_device_infos(serial) or {}
+            has_night = self._read_night_light_state(info) is not None
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("EZVIZ HP7: label light feature probe failed: %s", exc)
+
+        if has_night:
+            # Best-effort IoT write. Path: LightCtrl/<idx>/NightLightEnable.
+            try:
+                resp = self._client.set_iot_feature(
+                    serial,
+                    resource_identifier="LightCtrl",
+                    local_index="1",
+                    domain_id="NightLightEnable",
+                    action_id="NightLightEnable",
+                    value={"value": {"enabled": bool(enable)}},
+                )
+                _LOGGER.info(
+                    "EZVIZ HP7: label light (IoT NightLight) set enable=%s -> %s",
+                    enable, resp,
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "EZVIZ HP7: label light IoT write failed (enable=%s): %s",
+                    enable, exc,
+                )
+                # Fall through to the switch attempt below.
+
         try:
             self._client.switch_status(
                 serial,
@@ -852,6 +908,14 @@ class Hp7Api:
                     coerced = self._coerce_bool(sw.get("enable"))
                     if coerced is not None:
                         out["label_light_on"] = coerced
+
+        # HPD7 name-plate LED lives in the IoT FEATURE tree, not SWITCH 611
+        # (#34): FEATURE_INFO["1"]["LightCtrl"]["NightLightEnable"]. When
+        # present it's the authoritative state, so prefer it over the (stuck)
+        # switch reading.
+        night = self._read_night_light_state(info)
+        if night is not None:
+            out["label_light_on"] = night
 
         status = info.get("STATUS") or {}
         if isinstance(status, dict):
