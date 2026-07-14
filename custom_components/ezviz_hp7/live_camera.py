@@ -433,6 +433,13 @@ class Hp7StreamRelay:
         # a packet capture.
         self._es_dump_buf = bytearray()
         self._es_dump_done = False
+        # Raw MPEG-PS dump + keyframe-marker counter (#41): the HPD5 "synced"
+        # stream turned out to contain no parameter sets in the video ES, so
+        # we also need to see the container *before* demux and whether
+        # VPS/SPS markers ever occur across the whole session.
+        self._ps_dump_buf = bytearray()
+        self._ps_dump_done = False
+        self._kf_markers_seen = 0
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -505,6 +512,37 @@ class Hp7StreamRelay:
         finally:
             self._es_dump_buf = bytearray()
 
+    def _ps_dump(self, body: bytes) -> None:
+        """Collect the first 128 KB of raw (decrypted) MPEG-PS and write it
+        once (#41). Debug-only. Complements the ES dump: if VPS/SPS exist
+        here but not in the demuxed ES, the demux is stripping them; if they
+        don't exist here either, the device delivers them out-of-band.
+        """
+        if self._ps_dump_done or not _LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        self._ps_dump_buf.extend(body)
+        if len(self._ps_dump_buf) < 128 * 1024:
+            return
+        self._ps_dump_done = True
+        try:
+            if self._hass is not None:
+                path = self._hass.config.path(
+                    f"ezviz_hp7_ps_dump_{self._serial}.bin"
+                )
+            else:
+                path = f"/tmp/ezviz_hp7_ps_dump_{self._serial}.bin"
+            with open(path, "wb") as fh:
+                fh.write(self._ps_dump_buf[: 128 * 1024])
+            _LOGGER.warning(
+                "Hp7StreamRelay: wrote 128 KB raw MPEG-PS diagnostic dump "
+                "to %s",
+                path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7StreamRelay: PS dump write failed: %s", exc)
+        finally:
+            self._ps_dump_buf = bytearray()
+
     def _gop_update(self, chunk: bytes) -> None:
         """Track the stream since the last keyframe (#37).
 
@@ -517,6 +555,7 @@ class Hp7StreamRelay:
         """
         with self._gop_lock:
             if _has_keyframe(chunk):
+                self._kf_markers_seen += 1
                 self._gop_buf = bytearray(chunk)
             elif self._gop_buf:
                 if len(self._gop_buf) + len(chunk) > GOP_CACHE_MAX:
@@ -778,6 +817,9 @@ class Hp7StreamRelay:
             self._gop_buf = bytearray()
         self._es_dump_buf = bytearray()
         self._es_dump_done = False
+        self._ps_dump_buf = bytearray()
+        self._ps_dump_done = False
+        self._kf_markers_seen = 0
         v_bytes = a_bytes = 0
         next_v_log = 256 * 1024
         next_a_log = 32 * 1024
@@ -800,6 +842,7 @@ class Hp7StreamRelay:
                     # comes from the de-mislabelled PES.
                     v_bytes += len(body)
                     self._gop_update(body)
+                    self._ps_dump(body)
                     for q in list(self._sub_raw_qs):
                         try:
                             q.put_nowait(body)
@@ -832,8 +875,9 @@ class Hp7StreamRelay:
                     if v_bytes >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
-                            "%d B audio=%d B subs=%d",
+                            "%d B audio=%d B subs=%d kf_markers=%d",
                             v_bytes, a_bytes, len(self._sub_raw_qs),
+                            self._kf_markers_seen,
                         )
                         next_v_log = v_bytes + 256 * 1024
                     continue

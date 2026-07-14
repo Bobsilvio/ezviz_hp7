@@ -256,6 +256,17 @@ class StreamDecoder:
                 pack_off,
                 start,
             )
+            # Diagnostic (#41): show what the gate actually matched. The
+            # markers are searched in the raw MPEG-PS, which also carries
+            # audio PES payloads (arbitrary bytes, no emulation prevention),
+            # so a match can be a false positive inside audio data — the
+            # HPD5 dump showed a "synced" stream whose video ES contained no
+            # parameter sets at all. The context bytes tell us whether this
+            # was a real VPS/SPS in a video PES or garbage.
+            _LOGGER.debug(
+                "CPD7 decoder: keyframe match context: ...%s",
+                buf[max(0, kf_off - 16):kf_off + 32].hex(" "),
+            )
             return
 
         # Not yet — bound the buffer in case the keyframe never arrives.
