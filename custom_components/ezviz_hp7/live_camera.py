@@ -47,6 +47,7 @@ import logging
 import queue
 import socket
 import threading
+import time
 from contextlib import closing
 from typing import TYPE_CHECKING, Any, List, Optional
 
@@ -181,6 +182,8 @@ OUTPUT_STALL_TIMEOUT = 30.0
 # GOP exceeds this the cache is dropped for that GOP (new viewers fall back
 # to waiting for the next keyframe — the pre-cache behaviour).
 GOP_CACHE_MAX = 8 * 1024 * 1024
+# Interval between relay progress log lines (#44).
+PROGRESS_LOG_SEC = 60.0
 
 MIN_RETRY_INTERVAL = 30.0
 LOCKOUT_THRESHOLD = 3
@@ -440,6 +443,12 @@ class Hp7StreamRelay:
         self._ps_dump_buf = bytearray()
         self._ps_dump_done = False
         self._kf_markers_seen = 0
+        # Dropped-chunk counter (#44). A full per-subscriber queue means we
+        # silently discard stream data — which corrupts that viewer's feed and
+        # looks exactly like stuttering/freezing. Counting it separates
+        # HA-side backpressure (drops > 0: a consumer can't keep up) from
+        # device-side starvation (drops == 0: the doorbell itself sends late).
+        self._drops = 0
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -820,9 +829,12 @@ class Hp7StreamRelay:
         self._ps_dump_buf = bytearray()
         self._ps_dump_done = False
         self._kf_markers_seen = 0
+        self._drops = 0
         v_bytes = a_bytes = 0
-        next_v_log = 256 * 1024
-        next_a_log = 32 * 1024
+        # Time-based, not byte-based: at ~400 KB/s a 256 KB threshold emitted
+        # an INFO line every ~0.6 s forever — a 24/7 Frigate consumer logged
+        # tens of thousands of lines (#44, 20 GB session).
+        next_v_log = next_a_log = time.monotonic() + PROGRESS_LOG_SEC
         try:
             for body in self._shared_vtm.iter_payloads():
                 if self._shared_stop.is_set():
@@ -847,7 +859,7 @@ class Hp7StreamRelay:
                         try:
                             q.put_nowait(body)
                         except queue.Full:
-                            pass
+                            self._drops += 1
                     for stream_id, payload in parser.feed(body):
                         if stream_id == AUDIO_STREAM_ID and payload:
                             a_bytes += len(payload)
@@ -855,7 +867,7 @@ class Hp7StreamRelay:
                                 try:
                                     q.put_nowait(payload)
                                 except queue.Full:
-                                    pass
+                                    self._drops += 1
                         elif stream_id == VIDEO_STREAM_ID and payload:
                             self._es_dump(payload)
                             if self._detected_codec is None:
@@ -872,14 +884,14 @@ class Hp7StreamRelay:
                                         guess, self._serial,
                                     )
                                     self._warn_if_hevc_on_webrtc(guess)
-                    if v_bytes >= next_v_log:
+                    if time.monotonic() >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
-                            "%d B audio=%d B subs=%d kf_markers=%d",
+                            "%d B audio=%d B subs=%d kf_markers=%d drops=%d",
                             v_bytes, a_bytes, len(self._sub_raw_qs),
-                            self._kf_markers_seen,
+                            self._kf_markers_seen, self._drops,
                         )
-                        next_v_log = v_bytes + 256 * 1024
+                        next_v_log = time.monotonic() + PROGRESS_LOG_SEC
                     continue
                 for stream_id, payload in parser.feed(body):
                     if not payload:
@@ -902,30 +914,31 @@ class Hp7StreamRelay:
                             try:
                                 q.put_nowait(payload)
                             except queue.Full:
-                                pass
-                        if v_bytes >= next_v_log:
+                                self._drops += 1
+                        if time.monotonic() >= next_v_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast video progress %d B "
-                                "subs=%d",
+                                "subs=%d drops=%d",
                                 v_bytes,
                                 len(self._sub_v_qs),
+                                self._drops,
                             )
-                            next_v_log = v_bytes + 256 * 1024
+                            next_v_log = time.monotonic() + PROGRESS_LOG_SEC
                     elif stream_id == AUDIO_STREAM_ID:
                         a_bytes += len(payload)
                         for q in list(self._sub_a_qs):
                             try:
                                 q.put_nowait(payload)
                             except queue.Full:
-                                pass
-                        if a_bytes >= next_a_log:
+                                self._drops += 1
+                        if time.monotonic() >= next_a_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast audio progress %d B "
                                 "subs=%d",
                                 a_bytes,
                                 len(self._sub_a_qs),
                             )
-                            next_a_log = a_bytes + 32 * 1024
+                            next_a_log = time.monotonic() + PROGRESS_LOG_SEC
         except Exception as exc:
             # EBADF here is the expected race when the shared VTM session
             # is torn down by another thread (idle timeout or stop()) while
