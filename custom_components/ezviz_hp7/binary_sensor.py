@@ -350,6 +350,9 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
         self._attr_icon = icon
         self._last_trigger: dt_util.datetime | None = None
         self._prev_alarm_time: str | None = None
+        # False until the first coordinator update has been absorbed, so a
+        # pre-existing alarm doesn't fire as if it just happened (#45).
+        self._primed = False
         self._off_unsub: CALLBACK_TYPE | None = None
 
     @property
@@ -399,6 +402,21 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
         data = self.coordinator.data or {}
         current_alarm = data.get(ALARM_FIELD)
         current_alarm_time = data.get(ALARM_TIME_FIELD)
+
+        # Prime on the first update instead of pulsing (#45). The cloud always
+        # reports the LAST alarm, however old; with _prev_alarm_time still
+        # None that looked like a brand-new event, so every HA restart or
+        # integration reload replayed the last unlock — pulsing the sensor and
+        # firing ezviz_hp7_unlock for something that happened hours ago.
+        if self._primed is False:
+            self._primed = True
+            self._prev_alarm_time = current_alarm_time
+            _LOGGER.debug(
+                "Alarm sensor %s primed at %s (no pulse)",
+                self._attr_translation_key, current_alarm_time,
+            )
+            self.async_write_ha_state()
+            return
 
         if (
             self._alarm_matches(current_alarm)
