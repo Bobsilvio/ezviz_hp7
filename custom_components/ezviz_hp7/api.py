@@ -17,6 +17,9 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_DOOR_LOCK_NO = 2
 DEFAULT_GATE_LOCK_NO = 1
+# How long a fetched ChimeMusic blob stays valid. Must be > the coordinator
+# poll interval so consecutive ticks reuse it (#44).
+CHIME_CACHE_TTL = 60.0
 
 REGION_URLS: dict[str, str] = {
     "eu": "apiieu.ezvizlife.com",
@@ -451,8 +454,14 @@ class Hp7Api:
         # HTTP GETs per device + monitor every 15s poll, hammering the
         # EZVIZ cloud (log spam, 504 risk). Cache the blob briefly so the
         # five getters in one tick share a single fetch.
+        # TTL must exceed the poll interval, otherwise every cycle re-fetches
+        # (10 s vs a 15 s poll meant the cache never hit across ticks). The
+        # ChimeMusic endpoint is proxied to the doorbell, and that traffic
+        # competes with its LAN streaming task (#44), so we keep the blob for
+        # a full minute. Writes invalidate the entry explicitly, and the
+        # switches are optimistic (0.13.21), so the UI still reacts instantly.
         cached = self._chime_config_cache.get(serial)
-        if cached is not None and (time.monotonic() - cached[1]) < 10.0:
+        if cached is not None and (time.monotonic() - cached[1]) < CHIME_CACHE_TTL:
             return cached[0]
         try:
             result = self._client.get_dev_config(serial, 1, "ChimeMusic")
@@ -874,11 +883,21 @@ class Hp7Api:
                 return False
         return None
 
-    def _read_extra_states(self, serial: str) -> dict[str, Any]:
-        """Read DND / privacy / defence state from a fresh get_device_infos."""
+    def _read_extra_states(
+        self, serial: str, info: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Read DND / privacy / defence / feature state from device infos.
+
+        ``info`` lets the caller pass a device-infos payload it already
+        fetched this cycle, so we don't hit the (device-proxied) pagelist
+        endpoint twice per poll — cloud polling competes with the doorbell's
+        LAN streaming task for its embedded CPU (#44).
+        """
         out: dict[str, Any] = {}
         if not self._client:
             return out
+        if info is not None:
+            return self._parse_extra_states(serial, info)
         try:
             info = self._client.get_device_infos(serial) or {}
         except Exception as exc:  # noqa: BLE001
@@ -886,6 +905,13 @@ class Hp7Api:
                 "EZVIZ HP7: extra states fetch failed for %s: %s", serial, exc
             )
             return out
+        return self._parse_extra_states(serial, info)
+
+    def _parse_extra_states(
+        self, serial: str, info: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Extract DND / privacy / defence / feature state from device infos."""
+        out: dict[str, Any] = {}
 
         nodisturb = info.get("NODISTURB") or {}
         if isinstance(nodisturb, dict):
@@ -1025,6 +1051,11 @@ class Hp7Api:
             # "'NoneType' object has no attribute 'get'".
             cam_status = camera.status(refresh=True) or {}
             wifi_info = cam_status.get("WIFI") or {}
+            # EzvizCamera already fetched the pagelist for this serial; reuse
+            # that payload for the extra states instead of fetching it again
+            # (#44 — halves the per-poll cloud calls that compete with the
+            # doorbell's LAN streaming task).
+            cached_infos = getattr(camera, "_device", None)
 
             _LOGGER.debug("Device status received for %s", serial)
 
@@ -1106,8 +1137,12 @@ class Hp7Api:
                 if monitor_pir_ring:
                     status_data["chime_pir_ringtone_monitors"] = monitor_pir_ring
 
-            # Extra states best-effort (DND / privacy / defence).
-            extra = self._read_extra_states(serial)
+            # Extra states best-effort (DND / privacy / defence / features),
+            # reusing the pagelist EzvizCamera already fetched when possible.
+            extra = self._read_extra_states(
+                serial,
+                info=cached_infos if isinstance(cached_infos, dict) else None,
+            )
             status_data.update(extra)
 
             return status_data

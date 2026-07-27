@@ -87,6 +87,37 @@ class Hp7Coordinator(DataUpdateCoordinator):
         # new enrolments / renames within a polling cycle or two.
         self._key_list: list[dict[str, Any]] | None = None
         self._key_list_age: int = 10**6  # force first fetch
+        # Relay handle, set by the camera platform once it exists. Used to
+        # back polling off while someone is watching the LAN stream (#44).
+        self.live_relay: Any = None
+        self._slowed_for_stream = False
+
+    def _apply_stream_aware_interval(self) -> None:
+        """Poll slower while a local stream has viewers (#44).
+
+        AnthoPakPak's finding: when cloud calls stopped, the LAN stream went
+        from severely stuttering to perfectly smooth for hours. Several of
+        the endpoints we poll are proxied to the doorbell, and answering them
+        competes with its streaming task on the device's small CPU. So while
+        someone is actually watching, poll at a quarter of the rate; restore
+        the normal cadence as soon as the last viewer leaves.
+        """
+        relay = self.live_relay
+        watching = bool(
+            relay is not None
+            and getattr(relay, "_active_lan", False)
+            and getattr(relay, "_active_clients", 0) > 0
+        )
+        if watching == self._slowed_for_stream:
+            return
+        self._slowed_for_stream = watching
+        self.update_interval = timedelta(
+            seconds=UPDATE_INTERVAL_SEC * (4 if watching else 1)
+        )
+        _LOGGER.debug(
+            "EZVIZ HP7: poll interval -> %ss (local stream viewers: %s)",
+            self.update_interval.total_seconds(), watching,
+        )
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest device status from API.
@@ -97,6 +128,7 @@ class Hp7Coordinator(DataUpdateCoordinator):
         (RFID card id, picture id, etc.) and embed it under
         ``latest_alarm_detail``.
         """
+        self._apply_stream_aware_interval()
         # A blip is either an exception OR an empty dict (get_status swallows
         # RequestException and returns {}). Treat both the same: hold the last
         # good data for a short grace window before degrading to unavailable.

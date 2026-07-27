@@ -1520,6 +1520,11 @@ async def async_setup_live_entities(
     )
     await relay.start()
     data["live_relay"] = relay
+    # Let the coordinator see the relay so it can back polling off while
+    # someone is watching the LAN stream (#44).
+    coordinator = data.get("coordinator")
+    if coordinator is not None:
+        coordinator.live_relay = relay
 
     # "auto": probe the actual video codec once and pick the delivery mode so
     # users don't have to know it — H.264 → webrtc (audio + low latency),
