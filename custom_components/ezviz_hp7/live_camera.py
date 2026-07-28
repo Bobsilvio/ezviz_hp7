@@ -521,6 +521,31 @@ class Hp7StreamRelay:
         finally:
             self._es_dump_buf = bytearray()
 
+    def _put_latest(self, q: "queue.Queue[Optional[bytes]]", item: bytes) -> None:
+        """Enqueue ``item``, discarding the OLDEST chunk when the queue is full.
+
+        Previously a full queue dropped the *newest* chunk and kept the stale
+        backlog, so a viewer that fell behind once kept draining old data
+        forever — the picture stuttered and the delay grew without bound
+        (#44 AnthoPakPak, drops=22.8M). Dropping the oldest instead lets a
+        saturated viewer skip forward to live data and resync at the next
+        keyframe, which is the behaviour a live stream wants.
+        """
+        try:
+            q.put_nowait(item)
+            return
+        except queue.Full:
+            pass
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            pass
+        self._drops += 1
+
     def _ps_dump(self, body: bytes) -> None:
         """Collect the first 128 KB of raw (decrypted) MPEG-PS and write it
         once (#41). Debug-only. Complements the ES dump: if VPS/SPS exist
@@ -856,18 +881,12 @@ class Hp7StreamRelay:
                     self._gop_update(body)
                     self._ps_dump(body)
                     for q in list(self._sub_raw_qs):
-                        try:
-                            q.put_nowait(body)
-                        except queue.Full:
-                            self._drops += 1
+                        self._put_latest(q, body)
                     for stream_id, payload in parser.feed(body):
                         if stream_id == AUDIO_STREAM_ID and payload:
                             a_bytes += len(payload)
                             for q in list(self._sub_a_qs):
-                                try:
-                                    q.put_nowait(payload)
-                                except queue.Full:
-                                    self._drops += 1
+                                self._put_latest(q, payload)
                         elif stream_id == VIDEO_STREAM_ID and payload:
                             self._es_dump(payload)
                             if self._detected_codec is None:
@@ -911,10 +930,7 @@ class Hp7StreamRelay:
                                 )
                                 self._warn_if_hevc_on_webrtc(guess)
                         for q in list(self._sub_v_qs):
-                            try:
-                                q.put_nowait(payload)
-                            except queue.Full:
-                                self._drops += 1
+                            self._put_latest(q, payload)
                         if time.monotonic() >= next_v_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast video progress %d B "
@@ -927,10 +943,7 @@ class Hp7StreamRelay:
                     elif stream_id == AUDIO_STREAM_ID:
                         a_bytes += len(payload)
                         for q in list(self._sub_a_qs):
-                            try:
-                                q.put_nowait(payload)
-                            except queue.Full:
-                                self._drops += 1
+                            self._put_latest(q, payload)
                         if time.monotonic() >= next_a_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast audio progress %d B "
