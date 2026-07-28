@@ -73,6 +73,16 @@ STREAM_MODE_WEBRTC = "webrtc"
 STREAM_MODE_MJPEG = "mjpeg"
 STREAM_MODES = [STREAM_MODE_AUTO, STREAM_MODE_WEBRTC, STREAM_MODE_MJPEG]
 
+# Which encoder stream the LAN (CPD7) session requests. "main" is the full
+# resolution feed; "sub" is the device's low-resolution substream, which is
+# dramatically cheaper to decode — the lever for hosts that can't decode
+# 1080p HEVC in software in realtime (#44: accumulating delay with a single
+# viewer on ARM). Cloud source always serves the main stream.
+CONF_STREAM_QUALITY = "stream_quality"
+STREAM_QUALITY_MAIN = "main"
+STREAM_QUALITY_SUB = "sub"
+STREAM_QUALITIES = [STREAM_QUALITY_MAIN, STREAM_QUALITY_SUB]
+
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
 

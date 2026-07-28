@@ -77,10 +77,14 @@ class Cpd7LanSource:
     is unchanged. LAN protocol credit: albrzmr (see cpd7/__init__.py).
     """
 
-    def __init__(self, api: "Hp7Api", serial: str, channel: int = 1) -> None:
+    def __init__(
+        self, api: "Hp7Api", serial: str, channel: int = 1,
+        stream_quality: str = "main",
+    ) -> None:
         self._api = api
         self._serial = serial
         self._channel = channel
+        self._stream_quality = stream_quality
         self._client: Any = None
         self._decoder: Any = None
         self._closed = False
@@ -97,13 +101,16 @@ class Cpd7LanSource:
                 "(device not on this network?)"
             )
         related = self._api.get_related_device(self._serial)
-        client = Cpd7LanClient(local_ip, related, key, channel=self._channel)
+        client = Cpd7LanClient(
+            local_ip, related, key, channel=self._channel,
+            stream_quality=self._stream_quality,
+        )
         client.start()
         self._client = client
         self._decoder = StreamDecoder(client.ecdh_priv)
         _LOGGER.info(
-            "Hp7StreamRelay: LAN source up (serial=%s ip=%s)",
-            self._serial, local_ip,
+            "Hp7StreamRelay: LAN source up (serial=%s ip=%s stream=%s)",
+            self._serial, local_ip, self._stream_quality,
         )
         return self
 
@@ -385,6 +392,7 @@ class Hp7StreamRelay:
         video_codec: str = "auto",
         stream_source: str = "cloud",
         stream_mode: str = "mjpeg",
+        stream_quality: str = "main",
         hass: Any = None,
     ) -> None:
         self._hass = hass
@@ -401,6 +409,9 @@ class Hp7StreamRelay:
         # (try LAN, fall back to cloud). LAN bypasses the cloud entirely and
         # works on firmware whose VTM channel never pushes (#33/#36/#37).
         self._stream_source = (stream_source or "cloud").lower()
+        # LAN encoder stream: "main" (full res) or "sub" (low-res, far
+        # cheaper to decode on weak hosts — #44).
+        self._stream_quality = (stream_quality or "main").lower()
         # Configured codec: "auto" | "h264" | "hevc". "auto" inspects the
         # first NAL units off the broadcast and sets _detected_codec; the
         # other two force it. Newer HP7 (HPD7) streams HEVC (#36, #37).
@@ -767,7 +778,10 @@ class Hp7StreamRelay:
             )
 
         def _open_lan():
-            return Cpd7LanSource(self._api, self._serial, channel=self._channel)
+            return Cpd7LanSource(
+                self._api, self._serial, channel=self._channel,
+                stream_quality=self._stream_quality,
+            )
 
         if self._stream_source == "cloud":
             return await loop.run_in_executor(None, _open_cloud)
@@ -1587,6 +1601,7 @@ async def async_setup_live_entities(
         video_codec=video_codec,
         stream_source=stream_source,
         stream_mode=stream_mode,
+        stream_quality=str(data.get("stream_quality") or "main"),
         hass=hass,
     )
     await relay.start()

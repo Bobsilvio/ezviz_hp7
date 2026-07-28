@@ -28,6 +28,9 @@ from .const import (
     CONF_STREAM_MODE,
     STREAM_MODE_AUTO,
     STREAM_MODES,
+    CONF_STREAM_QUALITY,
+    STREAM_QUALITY_MAIN,
+    STREAM_QUALITIES,
 )
 from .pylocalapi.exceptions import EzvizAuthVerificationCode
 
@@ -346,6 +349,11 @@ class OptionsFlow(config_entries.OptionsFlow):
             ).lower()
             if mode not in STREAM_MODES:
                 mode = STREAM_MODE_AUTO
+            quality = str(
+                user_input.get(CONF_STREAM_QUALITY) or STREAM_QUALITY_MAIN
+            ).lower()
+            if quality not in STREAM_QUALITIES:
+                quality = STREAM_QUALITY_MAIN
             return self.async_create_entry(
                 title="",
                 data={
@@ -356,6 +364,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_VIDEO_CODEC: codec,
                     CONF_STREAM_SOURCE: source,
                     CONF_STREAM_MODE: mode,
+                    CONF_STREAM_QUALITY: quality,
                 },
             )
 
@@ -430,6 +439,18 @@ class OptionsFlow(config_entries.OptionsFlow):
         if current_mode not in STREAM_MODES:
             current_mode = STREAM_MODE_AUTO
 
+        current_quality = str(
+            self.config_entry.options.get(
+                CONF_STREAM_QUALITY,
+                self.config_entry.data.get(
+                    CONF_STREAM_QUALITY, STREAM_QUALITY_MAIN
+                ),
+            )
+            or STREAM_QUALITY_MAIN
+        ).lower()
+        if current_quality not in STREAM_QUALITIES:
+            current_quality = STREAM_QUALITY_MAIN
+
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
@@ -449,6 +470,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_STREAM_MODE, default=current_mode
                 ): vol.In(STREAM_MODES),
+                vol.Optional(
+                    CONF_STREAM_QUALITY, default=current_quality
+                ): vol.In(STREAM_QUALITIES),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
