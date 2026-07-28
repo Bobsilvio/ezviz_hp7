@@ -184,6 +184,9 @@ OUTPUT_STALL_TIMEOUT = 30.0
 GOP_CACHE_MAX = 8 * 1024 * 1024
 # Interval between relay progress log lines (#44).
 PROGRESS_LOG_SEC = 60.0
+# A subscriber queue saturated this long with nothing draining it has no live
+# consumer left; evict it so its leaked ffmpeg stops competing for CPU (#44).
+DEAD_SUB_TIMEOUT = 30.0
 
 MIN_RETRY_INTERVAL = 30.0
 LOCKOUT_THRESHOLD = 3
@@ -449,6 +452,9 @@ class Hp7StreamRelay:
         # HA-side backpressure (drops > 0: a consumer can't keep up) from
         # device-side starvation (drops == 0: the doorbell itself sends late).
         self._drops = 0
+        # id(queue) -> monotonic time it first saturated, for dead-subscriber
+        # eviction (#44). Cleared as soon as a chunk goes in cleanly.
+        self._q_stalled_since: dict[int, float] = {}
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -521,7 +527,45 @@ class Hp7StreamRelay:
         finally:
             self._es_dump_buf = bytearray()
 
-    def _put_latest(self, q: "queue.Queue[Optional[bytes]]", item: bytes) -> None:
+    def _fanout(
+        self, qs: List["queue.Queue[Optional[bytes]]"], item: bytes
+    ) -> None:
+        """Broadcast ``item`` to subscribers, evicting dead ones (#44).
+
+        A subscriber whose queue stays saturated for DEAD_SUB_TIMEOUT with
+        nothing ever draining it has no live consumer — its client task
+        failed to tear down. AnthoPakPak reported ``subs=9`` with only
+        Frigate plus an occasional preview open, i.e. ~7 abandoned
+        subscribers; since every subscriber costs a relay ffmpeg (plus an
+        mjpeg ffmpeg per viewer), those leaked processes compete for the
+        same CPU as the live one. Evicting them frees that up.
+        """
+        now = time.monotonic()
+        for q in list(qs):
+            if self._put_latest(q, item):
+                self._q_stalled_since.pop(id(q), None)
+                continue
+            since = self._q_stalled_since.setdefault(id(q), now)
+            if now - since < DEAD_SUB_TIMEOUT:
+                continue
+            self._q_stalled_since.pop(id(q), None)
+            try:
+                qs.remove(q)
+            except ValueError:
+                pass
+            # Sentinel so the sender thread exits and the client tears down.
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+            _LOGGER.warning(
+                "Hp7StreamRelay: evicted a subscriber whose queue was "
+                "saturated for %.0fs with no consumer draining it "
+                "(serial=%s, %d left)",
+                DEAD_SUB_TIMEOUT, self._serial, len(qs),
+            )
+
+    def _put_latest(self, q: "queue.Queue[Optional[bytes]]", item: bytes) -> bool:
         """Enqueue ``item``, discarding the OLDEST chunk when the queue is full.
 
         Previously a full queue dropped the *newest* chunk and kept the stale
@@ -530,10 +574,13 @@ class Hp7StreamRelay:
         (#44 AnthoPakPak, drops=22.8M). Dropping the oldest instead lets a
         saturated viewer skip forward to live data and resync at the next
         keyframe, which is the behaviour a live stream wants.
+
+        Returns True if the chunk went in without evicting anything (i.e. the
+        consumer is keeping up), False if it saturated.
         """
         try:
             q.put_nowait(item)
-            return
+            return True
         except queue.Full:
             pass
         try:
@@ -545,6 +592,7 @@ class Hp7StreamRelay:
         except queue.Full:
             pass
         self._drops += 1
+        return False
 
     def _ps_dump(self, body: bytes) -> None:
         """Collect the first 128 KB of raw (decrypted) MPEG-PS and write it
@@ -855,6 +903,7 @@ class Hp7StreamRelay:
         self._ps_dump_done = False
         self._kf_markers_seen = 0
         self._drops = 0
+        self._q_stalled_since = {}
         v_bytes = a_bytes = 0
         # Time-based, not byte-based: at ~400 KB/s a 256 KB threshold emitted
         # an INFO line every ~0.6 s forever — a 24/7 Frigate consumer logged
@@ -880,13 +929,11 @@ class Hp7StreamRelay:
                     v_bytes += len(body)
                     self._gop_update(body)
                     self._ps_dump(body)
-                    for q in list(self._sub_raw_qs):
-                        self._put_latest(q, body)
+                    self._fanout(self._sub_raw_qs, body)
                     for stream_id, payload in parser.feed(body):
                         if stream_id == AUDIO_STREAM_ID and payload:
                             a_bytes += len(payload)
-                            for q in list(self._sub_a_qs):
-                                self._put_latest(q, payload)
+                            self._fanout(self._sub_a_qs, payload)
                         elif stream_id == VIDEO_STREAM_ID and payload:
                             self._es_dump(payload)
                             if self._detected_codec is None:
@@ -929,8 +976,7 @@ class Hp7StreamRelay:
                                     guess, self._serial,
                                 )
                                 self._warn_if_hevc_on_webrtc(guess)
-                        for q in list(self._sub_v_qs):
-                            self._put_latest(q, payload)
+                        self._fanout(self._sub_v_qs, payload)
                         if time.monotonic() >= next_v_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast video progress %d B "
@@ -942,8 +988,7 @@ class Hp7StreamRelay:
                             next_v_log = time.monotonic() + PROGRESS_LOG_SEC
                     elif stream_id == AUDIO_STREAM_ID:
                         a_bytes += len(payload)
-                        for q in list(self._sub_a_qs):
-                            self._put_latest(q, payload)
+                        self._fanout(self._sub_a_qs, payload)
                         if time.monotonic() >= next_a_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast audio progress %d B "
