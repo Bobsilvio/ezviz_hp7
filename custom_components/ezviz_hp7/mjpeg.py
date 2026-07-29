@@ -123,31 +123,25 @@ async def serve_mjpeg(
     await response.prepare(request)
 
     stderr_task = asyncio.create_task(_drain_stderr(proc))
-    total_bytes = 0
-    end_reason = "ok"
+    state = _SessionState()
+    reader_task = asyncio.create_task(_read_frames(proc, state))
     try:
-        assert proc.stdout is not None
-        while True:
-            chunk = await proc.stdout.read(64 * 1024)
-            if not chunk:
-                end_reason = "ffmpeg_eof"
-                break
-            total_bytes += len(chunk)
-            try:
-                await response.write(chunk)
-            except (ConnectionResetError, ConnectionAbortedError):
-                end_reason = "client_disconnected"
-                break
+        await _write_frames(response, state)
     except asyncio.CancelledError:
-        end_reason = "cancelled"
+        state.end_reason = "cancelled"
         raise
     except Exception as exc:  # noqa: BLE001
-        end_reason = f"error:{type(exc).__name__}"
+        state.end_reason = f"error:{type(exc).__name__}"
         _LOGGER.warning(
             "[MJPEG] unexpected session error: %s: %s", type(exc).__name__, exc
         )
         raise
     finally:
+        reader_task.cancel()
+        try:
+            await reader_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
         await _terminate(proc)
         stderr_task.cancel()
         try:
@@ -159,11 +153,90 @@ async def serve_mjpeg(
         except (ConnectionResetError, ConnectionAbortedError):
             pass
         duration = time.monotonic() - started_at
+        # blocked_s is the decisive number: time spent waiting on the HTTP
+        # client. A large fraction of the session means the viewer, not the
+        # doorbell or the host, is what the pipeline is waiting for (#44).
         _LOGGER.info(
-            "[MJPEG] session END client=%s duration=%.1fs bytes=%d reason=%s",
-            peer, duration, total_bytes, end_reason,
+            "[MJPEG] session END client=%s duration=%.1fs bytes=%d "
+            "frames=%d stale_dropped=%d blocked=%.1fs reason=%s",
+            peer, duration, state.total_bytes, state.frames_sent,
+            state.frames_dropped, state.blocked_s, state.end_reason,
         )
     return response
+
+
+class _SessionState:
+    """Shared state between the frame reader and the client writer."""
+
+    def __init__(self) -> None:
+        self.latest: bytes | None = None
+        self.new_frame = asyncio.Event()
+        self.eof = False
+        self.total_bytes = 0
+        self.frames_sent = 0
+        self.frames_dropped = 0
+        self.blocked_s = 0.0
+        self.end_reason = "ok"
+
+
+async def _read_frames(
+    proc: asyncio.subprocess.Process, state: _SessionState
+) -> None:
+    """Read ffmpeg's mpjpeg output and keep only the most recent frame.
+
+    The previous implementation piped ffmpeg straight to the client, so the
+    whole chain was a strict FIFO with no way to shed load: if the viewer
+    consumed slower than realtime even slightly, every stale frame still had
+    to be transmitted, and the picture fell further behind for as long as the
+    session lasted — an unbounded, accumulating delay (#44). Keeping only the
+    newest complete frame means a slow viewer simply skips frames and always
+    sees current video.
+    """
+    assert proc.stdout is not None
+    buf = bytearray()
+    sep = b"--" + _BOUNDARY.encode()
+    while True:
+        chunk = await proc.stdout.read(64 * 1024)
+        if not chunk:
+            state.eof = True
+            state.new_frame.set()
+            return
+        buf.extend(chunk)
+        # Split on the multipart boundary; everything before the LAST one is
+        # already superseded, so only the newest complete part is kept.
+        idx = buf.rfind(sep)
+        if idx <= 0:
+            continue
+        prev = buf.rfind(sep, 0, idx)
+        if prev < 0:
+            continue
+        frame = bytes(buf[prev:idx])
+        del buf[:idx]
+        if state.latest is not None:
+            state.frames_dropped += 1
+        state.latest = frame
+        state.new_frame.set()
+
+
+async def _write_frames(response: web.StreamResponse, state: _SessionState) -> None:
+    """Send the newest available frame to the client, skipping stale ones."""
+    while True:
+        await state.new_frame.wait()
+        state.new_frame.clear()
+        frame, state.latest = state.latest, None
+        if frame:
+            t0 = time.monotonic()
+            try:
+                await response.write(frame)
+            except (ConnectionResetError, ConnectionAbortedError):
+                state.end_reason = "client_disconnected"
+                return
+            state.blocked_s += time.monotonic() - t0
+            state.total_bytes += len(frame)
+            state.frames_sent += 1
+        if state.eof and state.latest is None:
+            state.end_reason = "ffmpeg_eof"
+            return
 
 
 async def _drain_stderr(proc: asyncio.subprocess.Process) -> None:
