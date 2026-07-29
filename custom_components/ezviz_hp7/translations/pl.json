@@ -1,0 +1,254 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Połącz z EZVIZ HP7 / CP7",
+        "description": "Wprowadź swoje dane logowania EZVIZ oraz region.",
+        "data": {
+          "username": "Nazwa użytkownika",
+          "password": "Hasło",
+          "region": "Region"
+        }
+      },
+      "pick_serial": {
+        "title": "Wybierz urządzenie",
+        "description": "Wybierz numer seryjny urządzenia HP7 / CP7.",
+        "data": {
+          "serial": "Numer seryjny"
+        }
+      },
+      "enter_serial": {
+        "title": "Wprowadź numer seryjny",
+        "description": "Wprowadź ręcznie numer seryjny urządzenia HP7 / CP7.",
+        "data": {
+          "serial": "Numer seryjny"
+        }
+      },
+      "sms": {
+        "title": "Weryfikacja SMS",
+        "description": "Wprowadź kod SMS wysłany przez EZVIZ, aby ukończyć uwierzytelnianie dwuskładnikowe.",
+        "data": {
+          "sms_code": "Kod SMS"
+        }
+      }
+    },
+    "error": {
+      "auth": "Logowanie nie powiodło się. Sprawdź dane logowania lub region.",
+      "invalid_sms": "Nieprawidłowy kod SMS, spróbuj ponownie."
+    },
+    "abort": {
+      "no_devices": "Nie znaleziono urządzeń na koncie.",
+      "already_configured": "Urządzenie jest już skonfigurowane"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "name": {
+        "name": "Nazwa urządzenia"
+      },
+      "version": {
+        "name": "Wersja oprogramowania układowego"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "online": "online",
+          "offline": "offline"
+        }
+      },
+      "signal": {
+        "name": "Sygnat Wi-Fi"
+      },
+      "ssid": {
+        "name": "Wi-Fi SSID"
+      },
+      "local_ip": {
+        "name": "Lokalny adres IP"
+      },
+      "wan_ip": {
+        "name": "Zewnętrzny adres IP (WAN)"
+      },
+      "motion": {
+        "name": "Ruch",
+        "state": {
+          "detected": "wykryto",
+          "none": "brak"
+        }
+      },
+      "last_alarm_time": {
+        "name": "Ostatni alarm"
+      },
+      "alarm_name": {
+        "name": "Typ alarmu"
+      },
+      "seconds_last_trigger": {
+        "name": "Sekundy od ostatniego ruchu"
+      },
+      "upgrade_available": {
+        "name": "Dostępna aktualizacja",
+        "state": {
+          "yes": "tak",
+          "no": "nie"
+        }
+      },
+      "mic_volume": {
+        "name": "Głośność mikrofonu"
+      }
+    },
+    "binary_sensor": {
+      "motion_trigger": {
+        "name": "Wykrywanie ruchu"
+      },
+      "smart_detection_alarm": {
+        "name": "Inteligentny alarm wykrywania"
+      },
+      "intelligent_detection_alarm": {
+        "name": "Inteligentne wykrywanie"
+      },
+      "doorbell_ringing": {
+        "name": "Dzwonienie dzwonka"
+      },
+      "gate_open": {
+        "name": "Brama otwarta"
+      },
+      "unlock_lock": {
+        "name": "Zamek odryglowany"
+      },
+      "unlock_rfid": {
+        "name": "Odryglowanie RFID"
+      },
+      "unlock_face": {
+        "name": "Odryglowanie twarzą"
+      },
+      "unlock_palm": {
+        "name": "Odryglowanie dłonią"
+      },
+      "unlock_code": {
+        "name": "Odryglowanie kodem"
+      },
+      "unlock_app": {
+        "name": "Odryglowanie aplikacją"
+      },
+      "feature_mute": {
+        "name": "Wyciszenie"
+      },
+      "feature_loitering": {
+        "name": "Wykrywanie kręcenia się"
+      },
+      "feature_stranger_detection": {
+        "name": "Wykrywanie nieznajomych"
+      },
+      "feature_human_detection": {
+        "name": "Wykrywanie ludzi"
+      }
+    },
+    "button": {
+      "unlock_gate": {
+        "name": "Otwórz bramę"
+      },
+      "unlock_door": {
+        "name": "Otwórz drzwi"
+      }
+    },
+    "switch": {
+      "chime_sound": {
+        "name": "Dźwięk dzwonka"
+      },
+      "chime_sound_monitor": {
+        "name": "Dźwięk monitora wewnętrznego"
+      },
+      "dnd": {
+        "name": "Nie przeszkadzać"
+      },
+      "privacy": {
+        "name": "Prywatność"
+      },
+      "defence": {
+        "name": "Uzbrojony"
+      },
+      "label_light": {
+        "name": "Podświetlenie etykiety"
+      },
+      "chime_pir": {
+        "name": "Alert dźwiękowy ruchu"
+      },
+      "chime_pir_monitor": {
+        "name": "Alert dźwiękowy ruchu monitora"
+      }
+    },
+    "camera": {
+      "last_snapshot": {
+        "name": "Ostatnie zdjęcie"
+      },
+      "live": {
+        "name": "Na żywo"
+      }
+    },
+    "number": {
+      "chime_volume": {
+        "name": "Głośność dzwonka"
+      },
+      "chime_volume_monitor": {
+        "name": "Głośność monitora"
+      },
+      "chime_ringtone": {
+        "name": "Melodia dzwonka"
+      },
+      "chime_pir_ringtone": {
+        "name": "Melodia ruchu"
+      },
+      "chime_ringtone_monitor": {
+        "name": "Melodia dzwonka monitora"
+      },
+      "chime_pir_ringtone_monitor": {
+        "name": "Melodia ruchu monitora"
+      }
+    }
+  },
+  "services": {
+    "unlock_gate": {
+      "name": "Otwórz bramę",
+      "description": "Otwórz bramę poprzez chmurę EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Numer seryjny",
+          "description": "Numer seryjny urządzenia"
+        }
+      }
+    },
+    "unlock_door": {
+      "name": "Otwórz drzwi",
+      "description": "Otwórz drzwi poprzez chmurę EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Numer seryjny",
+          "description": "Numer seryjny urządzenia"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opcje EZVIZ HP7 / CP7",
+        "description": "Wprowadź numer seryjny monitora wewnętrznego (lub kilka numerów oddzielonych przecinkami dla konfiguracji dwurodzinnej HP7), aby udostępnić dedykowany przełącznik dla każdego monitora. Puste pole = brak monitora.",
+        "data": {
+          "monitor_serial": "Numer seryjny monitora wewnętrznego",
+          "relay_port": "Stały port TCP dla przekazu na żywo (0 = losowy, sugerowany 8554 dla go2rtc / mediamtx)",
+          "relay_bind": "Host nasłuchu przekaźnika (127.0.0.1 = tylko lokalnie, bezpieczny domyślny; 0.0.0.0 udostępnia NIEUWIERZYTELNIONY surowy strumień innym hostom, np. Frigate — tylko zaufane sieci, wymaga stałego portu)",
+          "aggressive_mpegts": "Agresywna kompatybilność MPEG-TS (włącz, jeśli widzisz w logach 'Immediate exit requested'; można bezpiecznie zostawić WYŁĄCZONE domyślnie)",
+          "video_codec": "Kodek wideo (auto = wykrywanie; hevc transcodes H.265 na H.264 dla WebRTC; hevc_copy przesyła H.265 bez zmian dla słabszych hostów / Frigate / Safari)",
+          "stream_source": "Źródło strumienia (cloud = przekaźnik VTM EZVIZ; local = bezpośrednia sieć LAN, omija chmurę i naprawia błąd 'brak podglądu na żywo' na oprogramowaniu, które nie wysyła obrazu do chmury — wymaga HA w tej samej sieci co wideodomofon; auto = najpierw spróbuj LAN, potem chmurę)",
+          "stream_mode": "Dostarczanie widoku na żywo (auto = domyślnie: wykrywa kodek i dobiera odpowiedni — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, obsługuje dźwięk i ma niskie opóźnienie, ale nie wyświetli HEVC bez transkodowania; mjpeg = ffmpeg per widz do motion-JPEG, niezależny od kodeka i odporny na HEVC/wielu widzów, ale bez dźwięku)",
+          "stream_quality": "Jakość strumienia LAN (main = pełna rozdzielczość; sub = strumień o niskiej rozdzielczości z urządzenia, znacznie tańszy w dekodowaniu — użyj go, jeśli wideo gromadzi opóźnienie na słabym hoście, takim jak Raspberry Pi. Dotyczy tylko źródła 'local')"
+        }
+      }
+    }
+  },
+  "issues": {
+    "hevc_webrtc": {
+      "title": "Widok na żywo HEVC w trybie WebRTC",
+      "description": "Wideodomofon {serial} przesyła strumień w formacie HEVC/H.265, ale tryb strumienia jest ustawiony na WebRTC. Przeglądarki nie potrafią wyświetlić HEVC przez WebRTC, a go2rtc musi go transkodować, co na słabych hostach kończy się niepowodzeniem (szary ekran lub 'connection refused').\n\nKliknij 'Konfiguruj' przy integracji i ustaw tryb strumienia (Stream mode) na 'mjpeg' (niezależny od kodeka, bez go2rtc), a następnie załaduj ponownie. Ewentualnie, aby zachować WebRTC, ustaw kodek wideo (Video codec) na 'hevc', aby dokonać transkodowania do H.264."
+    }
+  }
+}
