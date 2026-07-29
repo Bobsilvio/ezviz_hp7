@@ -1143,6 +1143,20 @@ class Hp7StreamRelay:
         self._active_clients += 1
         self._arm_idle_timer()  # cancel idle teardown while we're connected
 
+        # Wall-clock re-timestamping was added for #37: the device's
+        # uptime-based DTS is already large and wraps the 33-bit MPEG-TS
+        # clock within hours, which makes HA's stream worker abort with
+        # "Timestamp discontinuity". But it paces the output by ARRIVAL
+        # time instead of capture time, so any systematic pacing error
+        # accumulates linearly and never recovers — the unbounded delay in
+        # #44, which VLC saw too (i.e. upstream of the MJPEG path). Only
+        # HA's stream worker actually needs it, so restrict it to WebRTC
+        # and let +genpts derive timestamps from the stream everywhere else.
+        wallclock = (
+            ["-use_wallclock_as_timestamps", "1"]
+            if self._stream_mode == "webrtc"
+            else []
+        )
         try:
             if lan:
                 # LAN: one input, the muxed MPEG-PS feed. ffmpeg demuxes it
@@ -1190,17 +1204,13 @@ class Hp7StreamRelay:
                     # not a fixed wait — it starts as soon as params are known.
                     "-fflags", "+genpts", "-flags", "low_delay",
                     "-analyzeduration", "10000000", "-probesize", "10000000",
-                    # Re-timestamp from the wall clock so DTS starts at 0
-                    # instead of the device's uptime-based value, which is
-                    # already high and wraps the 33-bit MPEG-TS clock within
-                    # hours -> HA's stream worker aborts with "Timestamp
-                    # discontinuity" (#37 Quenbo). From 0 the wrap only
-                    # happens after ~26h of continuous streaming.
-                    "-use_wallclock_as_timestamps", "1",
+                    # Wall-clock re-timestamping (see _wallclock_args) —
+                    # WebRTC/HLS only.
+                    *wallclock,
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
                     "-analyzeduration", "200000", "-probesize", "200000",
-                    "-use_wallclock_as_timestamps", "1",
+                    *wallclock,
                     "-f", "aac",
                     "-i", f"tcp://127.0.0.1:{a_port}",
                     # Video from the raw MPEG-PS input (its mislabelled MP2
@@ -1250,11 +1260,11 @@ class Hp7StreamRelay:
                     "-hide_banner", "-loglevel", "error",
                     "-fflags", "+genpts+nobuffer", "-flags", "low_delay",
                     "-analyzeduration", "200000", "-probesize", "200000",
-                    "-use_wallclock_as_timestamps", "1",
+                    *wallclock,
                     "-f", in_fmt, "-r", "15",
                     "-i", f"tcp://127.0.0.1:{v_port}",
                     "-analyzeduration", "200000", "-probesize", "200000",
-                    "-use_wallclock_as_timestamps", "1",
+                    *wallclock,
                     "-f", "aac",
                     "-i", f"tcp://127.0.0.1:{a_port}",
                     "-map", "0:v:0", "-map", "1:a:0",
