@@ -24,9 +24,8 @@ Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** 
 
 Unlock door / gate remotely, watch the live stream, hear the visitor on the intercom audio, manage the chime sound and volume on both the doorbell and every indoor monitor, react to RFID / face / palm / code / app unlocks in automations.
 
-- **Version:** 0.9.3
 - **Minimum Home Assistant:** 2025.9.0
-- **Languages:** Italian, English, Spanish, French (fallback English)
+- **Languages:** Italian, English, Spanish, French, Polish (fallback English)
 
 ---
 
@@ -44,7 +43,7 @@ Remove unused devices to free at least one slot.
 
 ## ✨ Features
 
-> ⚠️ **0.9.0 is a beta release.** Live video and core controls are tested and working on a real HP7. Several newer entities (label-light switch, motion-sound alert, ringtone selectors, unlock-event binary sensors / event, 2FA SMS login) are wired against the EZVIZ APIs but **need feedback from real hardware** — if you spot something wrong, please open an issue with the log lines you see.
+> ℹ️ **Hardware coverage.** Everything below is confirmed working on real HP7 / HPD7 hardware unless marked otherwise. Support varies by **model and firmware**, especially for the local LAN stream — see [Model / firmware support](#model--firmware-support) for what is actually verified, and [Troubleshooting](#-troubleshooting) for the problems reported most often. Reports with log lines are always welcome.
 
 - Auto-discovery and registration of paired EZVIZ HP7 / CP7 devices.
 - **Buttons**
@@ -57,7 +56,7 @@ Remove unused devices to free at least one slot.
   - 🔔 `chime_sound` — doorbell button chime on the camera unit
   - 🔔 `chime_sound_monitor` — chime on each configured indoor monitor (multi-monitor friendly — HP7 bifamigliare)
   - 🛎️ `chime_pir` / `chime_pir_monitor` — motion sound notification on / off
-  - 💡 `label_light` — *(beta)* the LED that illuminates the name-tag plate on the doorbell
+  - 💡 `label_light` — the LED that illuminates the name-tag plate. On HPD7 this is the IoT `LightCtrl/NightLightEnable` property (read **and** write confirmed on hardware); older HP7 firmware uses switch type 611
   - 🌙 `dnd` — *(beta)* Do-Not-Disturb mode
   - 🕶️ `privacy` — *(beta)* privacy / camera blackout
   - 🛡️ `defence` — *(beta)* armed / disarmed motion detection
@@ -69,18 +68,22 @@ Remove unused devices to free at least one slot.
   - Device name, firmware version, online/offline status
   - Wi-Fi signal (%), SSID, local IP, WAN IP
   - Motion state, last alarm timestamp, alarm name, seconds since last trigger
+  - 🎙️ `mic_volume` — microphone volume (diagnostic, read-only)
+- **Diagnostic binary sensors** (read-only device settings, added only when the device reports them)
+  - `feature_mute`, `feature_loitering`, `feature_stranger_detection`, `feature_human_detection`
+  - These are **not** writable: the doorbell rejects cloud writes for them, so they are exposed as state only. The night light is the one setting of this family that *is* writable — see `label_light` above.
 - **Binary sensors** (each pulses for 3 s on a fresh event)
   - Motion (`device_class: motion`)
   - Smart Detection Alarm, Intelligent Detection Alarm
   - Doorbell ringing, Gate open, Lock unlocked
-  - 🆔 *(beta — HP7 Pro)* `unlock_rfid`, `unlock_face`, `unlock_palm`, `unlock_code`, `unlock_app`
-- **HA event**: `ezviz_hp7_unlock` — *(beta)* fired on every recognised unlock with `{category, alarm_name, alarm_time, serial}` so automations can react to RFID / face / palm / code / app unlocks without polling state.
+  - 🆔 *(HP7 Pro / HPD7)* `unlock_rfid`, `unlock_face`, `unlock_palm`, `unlock_code`, `unlock_app`
+- **HA event**: `ezviz_hp7_unlock` — fired on every recognised unlock with `{category, alarm_name, alarm_time, serial}` so automations can react to RFID / face / palm / code / app unlocks without polling state.
 - **Services**
   - `ezviz_hp7.unlock_door`
   - `ezviz_hp7.unlock_gate`
 - **Login**
   - Account / password / region
-  - 🔐 *(beta)* 2FA SMS step — the config flow now prompts for the verification code EZVIZ pushes when MFA is enabled, no need to disable 2-step login
+  - 🔐 2FA SMS step — the config flow now prompts for the verification code EZVIZ pushes when MFA is enabled, no need to disable 2-step login
 - **Regions:** `eu`, `us`, `cn`, `as`, `sa`, `ru`
 
 ---
@@ -141,7 +144,7 @@ action:
 ## 🚧 Limitations
 
 - Currently supports **one HP7 / CP7 device per account entry** (multi-device support planned — multiple devices can be added today by repeating the config-entry setup).
-- The chime switch reads back state via cloud polling — changes made from the EZVIZ app appear after the next poll cycle.
+- Switch state is read back via cloud polling, so a change made in the EZVIZ app appears after the next poll cycle. Changes made *from Home Assistant* apply immediately: the switch holds the value you set for a short grace window, because the EZVIZ cloud takes a few seconds to report a write back and would otherwise make the toggle appear to bounce.
 - Two-way audio (talkback) is not implemented. Inbound audio is carried on the **`webrtc`** stream mode (AAC); the **`mjpeg`** mode is video-only.
 
 ---
@@ -174,13 +177,25 @@ Since **0.13.14** the default is **`auto`**: at startup it sniffs the codec and 
 
 Newer HP7 (HPD7) and CP7 firmware stream **HEVC/H.265**; older HP7 streams H.264. `auto` detects it. On the WebRTC path, `hevc` transcodes to H.264 (browser-friendly); `hevc_copy` passes H.265 through untouched for HEVC-capable players (Safari, Frigate). On the MJPEG path the codec doesn't matter (ffmpeg decodes either to JPEG).
 
+### Stream quality: `main` vs `sub` *(local source only)*
+
+The LAN session asks the doorbell for its **main** (full-resolution) encoder stream by default. Setting **Stream quality = `sub`** requests the device's low-resolution substream instead, which is far cheaper to decode — worth trying if the picture lags on a low-powered host, or if you only need the stream for detection in Frigate.
+
+> ⚠️ Not every firmware honours the substream request: on at least one HPD7 the stream simply fails to start with `sub`. If that happens, switch back to `main`. Leave it on `main` unless you are specifically chasing a performance problem.
+
 ### Model / firmware support
 
-| Model | Cloud | Local (LAN) |
-|---|---|---|
-| HP7 (H.264) | ✅ | ✅ |
-| HP7 / HPD7 (HEVC) | ✅ (transcode or mjpeg) | ✅ |
-| CP5 / CP7 | needs encryption OFF | ✅ (encryption OFF) |
+Based on what users have actually confirmed on hardware — not on what the protocol should allow:
+
+| Model | Cloud (VTM) | Local (LAN / CPD7) | Notes |
+|---|---|---|---|
+| HP7 (H.264) | ✅ | ✅ | WebRTC works, so you get audio |
+| HP7 Pro / HPD7 (HEVC) | ✅ | ✅ | Use `auto` or `mjpeg`; WebRTC can't show HEVC without transcoding |
+| CP7 | ✅ | ✅ | Requires Image/Video Encryption **OFF** |
+| CP5 | ✅ | ❌ | The firmware never authorises the LAN key: CAS keeps returning `1052175` **even with encryption off**. Use the cloud source |
+| HP5 / HPD5 | ✅ | ⚠️ | The LAN session opens and data flows, but the video carries no VPS/SPS/PPS, so nothing decodes ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41) — under investigation). Use the cloud source |
+
+**Image / Video Encryption must be OFF for the LAN path on every model.** With it on, the doorbell accepts the session but never emits plaintext video, and the CAS refuses the LAN key (`1052170` / `1052175`). Turn it off in the EZVIZ app under the device's settings (it asks for the 6-letter device code). It does **not** need to be off for the cloud source.
 
 A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic. The resolved LAN IP + AES key are cached so the local stream rides out transient EZVIZ cloud 504s.
 
@@ -205,6 +220,65 @@ Frigate then ingests `rtsp://homeassistant.local:8554/hp7` like any other camera
 
 **Frigate (or any consumer) on a different host:** by default the relay binds `127.0.0.1`, so only processes on the HA machine can read it. Since **0.14.0**, Configure exposes a **Relay listen host** option — set it to `0.0.0.0` (together with a fixed port) to let another box connect directly to `tcp://<ha-ip>:8554`. ⚠️ The raw stream is **unauthenticated**: only do this on a trusted LAN / VLAN, ideally with a firewall rule limiting the source IP.
 
+#### Full Frigate example
+
+Courtesy of [@digregoriovalerio](https://github.com/digregoriovalerio) ([#44](https://github.com/Bobsilvio/ezviz_hp7/issues/44)) — protect the go2rtc restream with credentials and point Frigate at it:
+
+```yaml
+# Home Assistant configuration.yaml
+go2rtc:
+  debug_ui: true
+  username: admin
+  password: !secret go2rtc_password
+```
+
+```yaml
+# Frigate config.yaml
+cameras:
+  hp7:
+    enabled: true
+    friendly_name: EZVIZ HP7
+    ffmpeg:
+      input_args: preset-rtsp-generic
+      inputs:
+        - path: rtsp://admin:<go2rtc_password>@<ha_ip>:18554/ezviz_hp7_live
+          roles:
+            - detect
+            - record
+```
+
+The password must be **URL-encoded** in the path. Open `http://<ha_ip>:11984` to check the go2rtc page — the *links* section shows the exact RTSP URL for your setup, since the stream name depends on your entity id.
+
+> 💡 For 24/7 recording, prefer **event-driven clips**: trigger Frigate (or a snapshot/record automation) from this integration's motion and doorbell binary sensors rather than holding a permanent session. Continuous recording through the **cloud** source in particular is a bad fit — long sessions get dropped and reconnect churn can trip EZVIZ rate limits.
+
+---
+
+## 🩺 Troubleshooting
+
+Most reports fall into a handful of patterns. Start here before opening an issue.
+
+**First, check your version.** HACS does **not** auto-update custom integrations — you have to trigger the update, then **fully restart** Home Assistant (a reload is not enough; the old module stays in memory). A surprising number of reported bugs are already fixed in a newer release.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Live view stuck on `idle` / blank, `Immediate exit requested` or `Invalid data found` in the log | The doorbell streams HEVC, or Image Encryption is on | Set **Stream source = `local`**, **Stream mode = `auto`**, **Video codec = `auto`**, and turn **Image/Video Encryption OFF** in the EZVIZ app |
+| Grey / black picture, or `dial tcp … connection refused` from go2rtc | HEVC on the WebRTC path — browsers can't decode it | Use **Stream mode = `auto`** (picks MJPEG for HEVC automatically) or force `mjpeg` |
+| Snapshot is a blob starting with `hikencodepicture` | Image Encryption is on — the picture is encrypted | Turn Image/Video Encryption **OFF** in the EZVIZ app |
+| `CAS get-encryption failed` / `Result=1052170` / `1052175` | The device won't hand out a LAN key | Encryption **OFF** first. If it persists, your firmware may not support the LAN path at all — see the support table above and use `cloud` |
+| All entities go `unknown` / `unavailable`, sometimes for hours | Transient EZVIZ cloud 504s, or an expired session on an old version | Update: since 0.13.11 the coordinator keeps last-known values through a ~1 min grace window and re-logins automatically. Also **remove any "reload the integration" automation** — it makes outages longer and can trip rate limits |
+| A switch flips back a few seconds after you toggle it | The cloud reports the old state briefly | Fixed in 0.13.21 (the switch holds your value during a grace window) |
+| Unlock sensors fire on every Home Assistant restart | The cloud always reports the *last* alarm, which looked new at startup | Fixed in 0.15.1 |
+| Live view takes 20-30 s to appear | The viewer had to wait for the doorbell's next keyframe | Fixed in 0.13.21 — the relay replays the stream since the last keyframe to each new viewer |
+
+**When opening an issue,** these four things make it solvable quickly: the **integration version**, the **device model**, your **Configure settings** (stream source / mode / codec), and the log lines. Enable debug logging first — Settings → Devices & Services → EZVIZ HP7 / CP7 → ⋮ → **Enable debug logging** — then reproduce, and paste the lines mentioning `ezviz_hp7`. The relay's own progress line is especially informative:
+
+```
+Hp7StreamRelay: broadcast LAN MPEG-PS progress <bytes> audio=<bytes> subs=<N> kf_markers=<N> drops=<N>
+[MJPEG] session END ... frames=<N> stale_dropped=<N> blocked=<N>s reason=...
+```
+
+> ⚠️ `ps aux | grep ffmpeg` run from the SSH/Terminal add-on always returns 0 — that container has its own process namespace and cannot see Home Assistant's processes. It is not a useful measurement.
+
 ---
 
 ## 🌐 Translations
@@ -215,6 +289,7 @@ UI labels and entity states are translated. Currently shipped:
 - 🇬🇧 English (`en`)
 - 🇪🇸 Spanish (`es`)
 - 🇫🇷 French (`fr`)
+- 🇵🇱 Polish (`pl`) — contributed by [@kurdak](https://github.com/kurdak)
 
 To add a language, copy `custom_components/ezviz_hp7/translations/en.json` to `<lang>.json`, translate the values, and restart Home Assistant.
 
@@ -230,7 +305,8 @@ This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://g
 
 - **Cloud VTM relay** — built on [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi).
 - **Local LAN stream (CPD7)** — the direct-LAN streaming protocol (ports 9010/9020, AES-128-CBC control frames, ECDH P-256 key agreement, ChaCha20 media decryption) was reverse engineered by **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**. The `cpd7/` modules are vendored from that fork under its MIT license, with thanks. This integration adds the EZVIZ p2p-register + CAS step that unlocks the LAN AES key (the missing piece that returned `1052170` before).
-- **MJPEG live-view mode** — the codec-agnostic per-viewer ffmpeg→motion-JPEG approach (which sidesteps the go2rtc/WebRTC HEVC issues) is also adapted from **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**, with thanks. Selectable per device via the **Stream mode** option; since 0.13.7 it is the **default** (the WebRTC/HLS path with audio stays available).
+- **Community diagnosis** — several fixes here came from users' own analysis rather than mine: the `hikencodepicture` / encryption finding and the ffmpeg probe-window fix ([@alex66a-hub](https://github.com/alex66a-hub)), the HPD5 bitstream analysis ([@ycmp64](https://github.com/ycmp64)), the cloud-polling-vs-stream observation and the measurements that eliminated three wrong theories ([@AnthoPakPak](https://github.com/AnthoPakPak)), and the Frigate recipe ([@digregoriovalerio](https://github.com/digregoriovalerio)). Thank you.
+- **MJPEG live-view mode** — the codec-agnostic per-viewer ffmpeg→motion-JPEG approach (which sidesteps the go2rtc/WebRTC HEVC issues) is also adapted from **[albrzmr](https://github.com/albrzmr/ezviz_hp7)**, with thanks. Selectable per device via the **Stream mode** option. Since 0.13.14 the default is `auto`, which probes the codec and picks MJPEG for HEVC and WebRTC (with audio) for H.264.
 
 ---
 
