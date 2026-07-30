@@ -90,6 +90,8 @@ Remove unused devices to free at least one slot.
 
 ## 📦 Installation via HACS
 
+> This integration is **not in the default HACS store** — add it as a *custom repository* using the steps below (the one-click badge does this for you).
+
 1. Open Home Assistant
 2. Go to **HACS → Integrations → Custom repositories**
 3. Add `https://github.com/Bobsilvio/ezviz_hp7` with type `Integration`
@@ -312,8 +314,9 @@ This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://g
 
 ## 📜 License
 
-Released **as-is**, without warranty of any kind.
-Personal Home Assistant use is permitted. Redistribution requires explicit authorization from the author.
+Released under the **[MIT License](LICENSE)** — free to use, modify and redistribute, provided the copyright notice is kept. Provided **as-is**, without warranty of any kind.
+
+Vendored third-party components keep their own licenses (albrzmr's CPD7 LAN + MJPEG code under MIT, RenierM26/pyEzvizApi under Apache-2.0) — see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ---
 
