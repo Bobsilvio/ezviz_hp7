@@ -327,11 +327,22 @@ def _reader_thread(
         )
 
 
+def _mk_drain(table: dict, q: Any):
+    """Return a callback stamping this queue's last-drain time (#44)."""
+    qid = id(q)
+
+    def _stamp() -> None:
+        table[qid] = time.monotonic()
+
+    return _stamp
+
+
 def _sender_thread(
     listener: socket.socket,
     q: "queue.Queue[Optional[bytes]]",
     stop: threading.Event,
     label: str,
+    on_drain: Any = None,
 ) -> None:
     """Wait for ffmpeg to connect, then forward the queue into that socket."""
     try:
@@ -359,6 +370,10 @@ def _sender_thread(
                 continue
             if payload is None:
                 return
+            if on_drain is not None:
+                # Liveness signal: this subscriber's consumer is alive and
+                # actually taking data (#44 follow-up).
+                on_drain()
             try:
                 conn.sendall(payload)
                 sent += len(payload)
@@ -465,7 +480,9 @@ class Hp7StreamRelay:
         self._drops = 0
         # id(queue) -> monotonic time it first saturated, for dead-subscriber
         # eviction (#44). Cleared as soon as a chunk goes in cleanly.
-        self._q_stalled_since: dict[int, float] = {}
+        # id(queue) -> monotonic time its consumer last took a chunk. Seeded
+        # on subscribe so a fresh viewer is never evicted before it starts.
+        self._q_last_drain: dict[int, float] = {}
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -553,13 +570,16 @@ class Hp7StreamRelay:
         """
         now = time.monotonic()
         for q in list(qs):
-            if self._put_latest(q, item):
-                self._q_stalled_since.pop(id(q), None)
+            self._put_latest(q, item)
+            # Liveness is "did the consumer take anything recently", NOT "is
+            # the queue full". Under the drop-oldest policy a queue whose
+            # consumer is even marginally slower than the producer sits full
+            # permanently by design, so the previous saturation test evicted
+            # perfectly healthy viewers after 30 s.
+            last = self._q_last_drain.get(id(q))
+            if last is None or now - last < DEAD_SUB_TIMEOUT:
                 continue
-            since = self._q_stalled_since.setdefault(id(q), now)
-            if now - since < DEAD_SUB_TIMEOUT:
-                continue
-            self._q_stalled_since.pop(id(q), None)
+            self._q_last_drain.pop(id(q), None)
             try:
                 qs.remove(q)
             except ValueError:
@@ -570,9 +590,8 @@ class Hp7StreamRelay:
             except queue.Full:
                 pass
             _LOGGER.warning(
-                "Hp7StreamRelay: evicted a subscriber whose queue was "
-                "saturated for %.0fs with no consumer draining it "
-                "(serial=%s, %d left)",
+                "Hp7StreamRelay: evicted a subscriber whose consumer took "
+                "nothing for %.0fs (serial=%s, %d left)",
                 DEAD_SUB_TIMEOUT, self._serial, len(qs),
             )
 
@@ -917,7 +936,7 @@ class Hp7StreamRelay:
         self._ps_dump_done = False
         self._kf_markers_seen = 0
         self._drops = 0
-        self._q_stalled_since = {}
+        self._q_last_drain = {}
         v_bytes = a_bytes = 0
         # Time-based, not byte-based: at ~400 KB/s a 256 KB threshold emitted
         # an INFO line every ~0.6 s forever — a 24/7 Frigate consumer logged
@@ -1125,6 +1144,9 @@ class Hp7StreamRelay:
                     raw_q.put_nowait(chunk)
                 except queue.Full:
                     break
+            now0 = time.monotonic()
+            self._q_last_drain[id(raw_q)] = now0
+            self._q_last_drain[id(a_q)] = now0
             self._sub_raw_qs.append(raw_q)
             self._sub_a_qs.append(a_q)  # de-mislabelled AAC audio
         else:
@@ -1133,6 +1155,9 @@ class Hp7StreamRelay:
                     v_q.put_nowait(chunk)
                 except queue.Full:
                     break
+            now0 = time.monotonic()
+            self._q_last_drain[id(v_q)] = now0
+            self._q_last_drain[id(a_q)] = now0
             self._sub_v_qs.append(v_q)
             self._sub_a_qs.append(a_q)
         if gop:
@@ -1326,13 +1351,13 @@ class Hp7StreamRelay:
             if lan:
                 raw_sender_t = threading.Thread(
                     target=_sender_thread,
-                    args=(raw_listener, raw_q, stop_event, "mpegps"),
+                    args=(raw_listener, raw_q, stop_event, "mpegps", _mk_drain(self._q_last_drain, raw_q)),
                     name=f"hp7-lan-send-{self._serial}",
                     daemon=True,
                 )
                 a_sender_t = threading.Thread(
                     target=_sender_thread,
-                    args=(a_listener, a_q, stop_event, "audio"),
+                    args=(a_listener, a_q, stop_event, "audio", _mk_drain(self._q_last_drain, a_q)),
                     name=f"hp7-lan-asend-{self._serial}",
                     daemon=True,
                 )
@@ -1340,13 +1365,13 @@ class Hp7StreamRelay:
             else:
                 v_sender_t = threading.Thread(
                     target=_sender_thread,
-                    args=(v_listener, v_q, stop_event, "video"),
+                    args=(v_listener, v_q, stop_event, "video", _mk_drain(self._q_last_drain, v_q)),
                     name=f"hp7-vtm-vsend-{self._serial}",
                     daemon=True,
                 )
                 a_sender_t = threading.Thread(
                     target=_sender_thread,
-                    args=(a_listener, a_q, stop_event, "audio"),
+                    args=(a_listener, a_q, stop_event, "audio", _mk_drain(self._q_last_drain, a_q)),
                     name=f"hp7-vtm-asend-{self._serial}",
                     daemon=True,
                 )
