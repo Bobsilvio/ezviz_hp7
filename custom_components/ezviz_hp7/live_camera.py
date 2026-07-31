@@ -174,6 +174,12 @@ AUDIO_STREAM_ID = 0xC0
 FFMPEG_KILL_TIMEOUT = 2.0
 RELAY_CHUNK = 65536
 PAYLOAD_QUEUE_SIZE = 256
+# Video carries whole MPEG-PS chunks and cannot tolerate gaps the way audio
+# can, so give it a deep buffer: at ~460 KB/s a 4096-slot queue is tens of
+# seconds of slack, which in practice means the drop path is never reached.
+# Dropping is then a genuine last resort rather than routine behaviour, and
+# the saturation warning below tells us whether it ever actually happens.
+VIDEO_QUEUE_SIZE = 4096
 # Watchdog on the relay ffmpeg's output (#41): if it produces nothing for
 # this long the session is dead — either the decode is failing silently
 # (HPD5 bad-NAL case: relay ingested 141 MB while emitting 0 bytes for 2 min)
@@ -485,6 +491,7 @@ class Hp7StreamRelay:
         self._q_last_drain: dict[int, float] = {}
         # Video queues currently waiting for a keyframe after saturating.
         self._q_resync: set[int] = set()
+        self._warned_saturation = False
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -588,6 +595,14 @@ class Hp7StreamRelay:
                     continue
                 self._q_resync.discard(qid)
             if not self._put_latest(q, item) and video:
+                if not self._warned_saturation:
+                    self._warned_saturation = True
+                    _LOGGER.warning(
+                        "Hp7StreamRelay: VIDEO QUEUE SATURATED (%d slots) — "
+                        "the consumer is slower than the doorbell; dropping "
+                        "to the next keyframe (serial=%s)",
+                        VIDEO_QUEUE_SIZE, self._serial,
+                    )
                 # Drop the whole backlog and resync at the next keyframe:
                 # keeps the viewer current AND decodable.
                 self._q_resync.add(qid)
@@ -964,6 +979,7 @@ class Hp7StreamRelay:
         self._drops = 0
         self._q_last_drain = {}
         self._q_resync = set()
+        self._warned_saturation = False
         v_bytes = a_bytes = 0
         # Time-based, not byte-based: at ~400 KB/s a 256 KB threshold emitted
         # an INFO line every ~0.6 s forever — a 24/7 Frigate consumer logged
@@ -1133,13 +1149,13 @@ class Hp7StreamRelay:
         threads: List[threading.Thread] = []
         stop_event = threading.Event()
         v_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
-            maxsize=PAYLOAD_QUEUE_SIZE
+            maxsize=VIDEO_QUEUE_SIZE
         )
         a_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
             maxsize=PAYLOAD_QUEUE_SIZE
         )
         raw_q: "queue.Queue[Optional[bytes]]" = queue.Queue(
-            maxsize=PAYLOAD_QUEUE_SIZE
+            maxsize=VIDEO_QUEUE_SIZE
         )
         raw_listener: Optional[socket.socket] = None
 
