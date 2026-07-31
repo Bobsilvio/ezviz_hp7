@@ -28,6 +28,7 @@ from .const import (
     CONF_STREAM_MODE,
     STREAM_MODE_AUTO,
     STREAM_MODES,
+    CONF_DIAGNOSTIC_DUMPS,
     CONF_STREAM_QUALITY,
     STREAM_QUALITY_MAIN,
     STREAM_QUALITIES,
@@ -354,6 +355,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             ).lower()
             if quality not in STREAM_QUALITIES:
                 quality = STREAM_QUALITY_MAIN
+            dumps = bool(user_input.get(CONF_DIAGNOSTIC_DUMPS, False))
             return self.async_create_entry(
                 title="",
                 data={
@@ -365,6 +367,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_STREAM_SOURCE: source,
                     CONF_STREAM_MODE: mode,
                     CONF_STREAM_QUALITY: quality,
+                    CONF_DIAGNOSTIC_DUMPS: dumps,
                 },
             )
 
@@ -451,6 +454,13 @@ class OptionsFlow(config_entries.OptionsFlow):
         if current_quality not in STREAM_QUALITIES:
             current_quality = STREAM_QUALITY_MAIN
 
+        current_dumps = bool(
+            self.config_entry.options.get(
+                CONF_DIAGNOSTIC_DUMPS,
+                self.config_entry.data.get(CONF_DIAGNOSTIC_DUMPS, False),
+            )
+        )
+
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
@@ -473,6 +483,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_STREAM_QUALITY, default=current_quality
                 ): vol.In(STREAM_QUALITIES),
+                vol.Optional(
+                    CONF_DIAGNOSTIC_DUMPS, default=current_dumps
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

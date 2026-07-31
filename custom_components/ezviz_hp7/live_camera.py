@@ -414,6 +414,7 @@ class Hp7StreamRelay:
         stream_source: str = "cloud",
         stream_mode: str = "mjpeg",
         stream_quality: str = "main",
+        diagnostic_dumps: bool = False,
         hass: Any = None,
     ) -> None:
         self._hass = hass
@@ -469,6 +470,7 @@ class Hp7StreamRelay:
         # 64 KB of demuxed video ES per session is written to the HA config
         # dir so misframed NAL payloads (HPD5) can be hex-inspected without
         # a packet capture.
+        self._diagnostic_dumps = bool(diagnostic_dumps)
         self._es_dump_buf = bytearray()
         self._es_dump_done = False
         # Raw MPEG-PS dump + keyframe-marker counter (#41): the HPD5 "synced"
@@ -539,7 +541,7 @@ class Hp7StreamRelay:
         so the blocking file write is fine. The dump lets HPD5 users share
         exactly what sits in front of the NAL start codes.
         """
-        if self._es_dump_done or not _LOGGER.isEnabledFor(logging.DEBUG):
+        if self._es_dump_done or not self._diagnostic_dumps:
             return
         self._es_dump_buf.extend(payload)
         if len(self._es_dump_buf) < 64 * 1024:
@@ -554,7 +556,7 @@ class Hp7StreamRelay:
                 path = f"/tmp/ezviz_hp7_es_dump_{self._serial}.bin"
             with open(path, "wb") as fh:
                 fh.write(self._es_dump_buf[: 64 * 1024])
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Hp7StreamRelay: wrote 64 KB video-ES diagnostic dump to %s "
                 "(first bytes: %s)",
                 path, self._es_dump_buf[:24].hex(" "),
@@ -671,7 +673,7 @@ class Hp7StreamRelay:
         here but not in the demuxed ES, the demux is stripping them; if they
         don't exist here either, the device delivers them out-of-band.
         """
-        if self._ps_dump_done or not _LOGGER.isEnabledFor(logging.DEBUG):
+        if self._ps_dump_done or not self._diagnostic_dumps:
             return
         self._ps_dump_buf.extend(body)
         if len(self._ps_dump_buf) < 128 * 1024:
@@ -686,7 +688,7 @@ class Hp7StreamRelay:
                 path = f"/tmp/ezviz_hp7_ps_dump_{self._serial}.bin"
             with open(path, "wb") as fh:
                 fh.write(self._ps_dump_buf[: 128 * 1024])
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Hp7StreamRelay: wrote 128 KB raw MPEG-PS diagnostic dump "
                 "to %s",
                 path,
@@ -1690,6 +1692,7 @@ async def async_setup_live_entities(
         stream_source=stream_source,
         stream_mode=stream_mode,
         stream_quality=str(data.get("stream_quality") or "main"),
+        diagnostic_dumps=bool(data.get("diagnostic_dumps", False)),
         hass=hass,
     )
     await relay.start()

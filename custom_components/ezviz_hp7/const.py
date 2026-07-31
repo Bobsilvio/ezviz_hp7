@@ -83,6 +83,13 @@ STREAM_QUALITY_MAIN = "main"
 STREAM_QUALITY_SUB = "sub"
 STREAM_QUALITIES = [STREAM_QUALITY_MAIN, STREAM_QUALITY_SUB]
 
+# Write raw stream captures to <config>/ezviz_hp7_{es,ps}_dump_<serial>.bin
+# for bitstream analysis when reporting a streaming bug. Off by default:
+# these are only useful while investigating, and they cost 192 KB per
+# session on disk. Previously tied to debug logging, which also meant
+# enabling debug for anything else silently started writing files.
+CONF_DIAGNOSTIC_DUMPS = "diagnostic_dumps"
+
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
 

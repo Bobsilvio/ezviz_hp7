@@ -240,7 +240,8 @@
           "video_codec": "Codec vidéo (auto = détection ; hevc transcode le H.265 en H.264 pour WebRTC ; hevc_copy laisse passer le H.265 tel quel pour hôtes peu puissants / Frigate / Safari)",
           "stream_source": "Source du flux (cloud = relais VTM EZVIZ ; local = LAN directe, contourne le cloud et corrige 'pas de direct' sur les firmwares qui n'émettent pas vers le cloud — nécessite HA sur le même réseau que le portier ; auto = essaie local puis cloud)",
           "stream_mode": "Mode de diffusion (auto = par défaut : détecte le codec et choisit tout seul — H.264 → webrtc, HEVC → mjpeg ; webrtc = HA Stream/go2rtc, avec audio + faible latence mais n'affiche pas le HEVC sans transcodage ; mjpeg = ffmpeg par spectateur en motion-JPEG, agnostique au codec et robuste pour HEVC/multi-spectateur mais sans audio)",
-          "stream_quality": "Qualité du flux LAN (main = pleine résolution ; sub = flux secondaire basse résolution de l'appareil, bien moins coûteux à décoder — à utiliser si la vidéo accumule du retard sur un hôte peu puissant comme un Raspberry Pi. Uniquement pour la source « local »)"
+          "stream_quality": "Qualité du flux LAN (main = pleine résolution ; sub = flux secondaire basse résolution de l'appareil, bien moins coûteux à décoder — à utiliser si la vidéo accumule du retard sur un hôte peu puissant comme un Raspberry Pi. Uniquement pour la source « local »)",
+          "diagnostic_dumps": "Vidages de diagnostic (écrit deux fichiers .bin dans /config capturant le début du flux, pour analyse lors d'un signalement de problème vidéo. Laissez sur OFF : inutile en usage normal)"
         }
       }
     }

@@ -26,6 +26,7 @@ from .const import (
     CONF_STREAM_MODE,
     STREAM_MODE_AUTO,
     STREAM_MODES,
+    CONF_DIAGNOSTIC_DUMPS,
     CONF_STREAM_QUALITY,
     STREAM_QUALITY_MAIN,
     STREAM_QUALITIES,
@@ -133,6 +134,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ).lower()
     if stream_quality not in STREAM_QUALITIES:
         stream_quality = STREAM_QUALITY_MAIN
+    diagnostic_dumps = bool(
+        entry.options.get(
+            CONF_DIAGNOSTIC_DUMPS,
+            entry.data.get(CONF_DIAGNOSTIC_DUMPS, False),
+        )
+    )
 
     try:
         api = Hp7Api(username, password, region, token=token)
@@ -171,6 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "stream_source": stream_source,
         "stream_mode": stream_mode,
         "stream_quality": stream_quality,
+        "diagnostic_dumps": diagnostic_dumps,
         "coordinator": coordinator,
     }
 

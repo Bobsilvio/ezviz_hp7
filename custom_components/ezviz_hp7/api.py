@@ -77,6 +77,11 @@ class Hp7Api:
         # auto-suggested phantom monitor serials still sit in entry
         # options for users upgrading from <=0.10.4).
         self._chime_dead_serials: set[str] = set()
+        # Serials whose FEATURE_INFO / SWITCH maps have already been logged.
+        # These blobs are multiple KB; logging them once per session is a
+        # diagnostic, logging them every poll is a flood.
+        self._feature_logged: set[str] = set()
+        self._switch_logged: set[str] = set()
 
 
     @property
@@ -924,7 +929,13 @@ class Hp7Api:
         # block (type 611 stays False whether the light is on or off), so it
         # must be an IoT-feature control. Surface any light/lamp/led-ish
         # feature so we can find the right domain/action to toggle it.
-        if _LOGGER.isEnabledFor(logging.DEBUG):
+        # Once per serial, not once per poll: this blob is multiple KB and
+        # was flooding the log every 15 s whenever debug logging was on.
+        if (
+            _LOGGER.isEnabledFor(logging.DEBUG)
+            and serial not in self._feature_logged
+        ):
+            self._feature_logged.add(serial)
             try:
                 import json as _json
 
@@ -972,7 +983,11 @@ class Hp7Api:
             # toggle no-ops. Dump the switch types the device actually exposes
             # so affected users can enable debug logging and report the real
             # type for the label light.
-            if _LOGGER.isEnabledFor(logging.DEBUG):
+            if (
+                _LOGGER.isEnabledFor(logging.DEBUG)
+                and serial not in self._switch_logged
+            ):
+                self._switch_logged.add(serial)
                 try:
                     dump = {
                         int(sw.get("type", -1)): sw.get("enable")

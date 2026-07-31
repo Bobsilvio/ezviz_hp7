@@ -240,7 +240,8 @@
           "video_codec": "Kodek wideo (auto = wykrywanie; hevc transcodes H.265 na H.264 dla WebRTC; hevc_copy przesyła H.265 bez zmian dla słabszych hostów / Frigate / Safari)",
           "stream_source": "Źródło strumienia (cloud = przekaźnik VTM EZVIZ; local = bezpośrednia sieć LAN, omija chmurę i naprawia błąd 'brak podglądu na żywo' na oprogramowaniu, które nie wysyła obrazu do chmury — wymaga HA w tej samej sieci co wideodomofon; auto = najpierw spróbuj LAN, potem chmurę)",
           "stream_mode": "Dostarczanie widoku na żywo (auto = domyślnie: wykrywa kodek i dobiera odpowiedni — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, obsługuje dźwięk i ma niskie opóźnienie, ale nie wyświetli HEVC bez transkodowania; mjpeg = ffmpeg per widz do motion-JPEG, niezależny od kodeka i odporny na HEVC/wielu widzów, ale bez dźwięku)",
-          "stream_quality": "Jakość strumienia LAN (main = pełna rozdzielczość; sub = strumień o niskiej rozdzielczości z urządzenia, znacznie tańszy w dekodowaniu — użyj go, jeśli wideo gromadzi opóźnienie na słabym hoście, takim jak Raspberry Pi. Dotyczy tylko źródła 'local')"
+          "stream_quality": "Jakość strumienia LAN (main = pełna rozdzielczość; sub = strumień o niskiej rozdzielczości z urządzenia, znacznie tańszy w dekodowaniu — użyj go, jeśli wideo gromadzi opóźnienie na słabym hoście, takim jak Raspberry Pi. Dotyczy tylko źródła 'local')",
+          "diagnostic_dumps": "Zrzuty diagnostyczne (zapisuje dwa pliki .bin w /config z początkiem strumienia, wyłącznie do analizy przy zgłaszaniu problemu z obrazem. Zostaw WYŁĄCZONE: niepotrzebne przy normalnym użyciu)"
         }
       }
     }
