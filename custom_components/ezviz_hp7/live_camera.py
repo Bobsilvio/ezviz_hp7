@@ -1272,9 +1272,19 @@ class Hp7StreamRelay:
                     # not a fixed wait — it starts as soon as params are known.
                     "-fflags", "+genpts", "-flags", "low_delay",
                     "-analyzeduration", "10000000", "-probesize", "10000000",
-                    # Wall-clock re-timestamping (see _wallclock_args) —
-                    # WebRTC/HLS only.
-                    *wallclock,
+                    # NO wall-clock re-timestamping on this input. It is a
+                    # real MPEG-PS container that already carries correct
+                    # timestamps; stamping by arrival instead collapses the
+                    # timeline, because the doorbell delivers over TCP faster
+                    # than realtime. Measured on a live capture: with
+                    # wallclock consecutive frames land ~11 us apart (15
+                    # frames inside one millisecond), so HA's stream worker
+                    # sees zero-duration frames and cannot build segments —
+                    # the picture freezes while the separately re-encoded
+                    # audio keeps playing. With +genpts alone the same
+                    # capture yields a clean 66.667 ms spacing (15 fps).
+                    # Wallclock stays on the raw elementary inputs below and
+                    # on the cloud path, which genuinely have no timestamps.
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
                     "-analyzeduration", "200000", "-probesize", "200000",
