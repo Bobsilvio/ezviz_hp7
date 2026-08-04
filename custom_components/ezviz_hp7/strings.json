@@ -239,6 +239,10 @@
     "hevc_webrtc": {
       "title": "Live HEVC in modalità WebRTC",
       "description": "Il citofono {serial} trasmette in HEVC/H.265, ma la modalità live è impostata su WebRTC. I browser non mostrano l'HEVC via WebRTC e go2rtc deve transcodificare, cosa che sugli host deboli fallisce (schermo grigio o 'connection refused').\n\nApri Configura sull'integrazione e imposta Modalità live su 'mjpeg' (codec-agnostica, senza go2rtc), poi Ricarica. In alternativa, per mantenere WebRTC, imposta Codec video su 'hevc' per transcodificare in H.264."
+    },
+    "stream_encrypted": {
+      "title": "Stream video cifrato dal dispositivo",
+      "description": "Il citofono {serial} sta cifrando il flusso video (Image/Video Encryption attiva). Il contenitore resta leggibile ma i dati sono scrambled, quindi ffmpeg non riesce a decodificare e il live resta nero.\n\nApri l'app EZVIZ → il dispositivo → Impostazioni → **Crittografia immagini/video** e disattivala (chiede il codice a 6 lettere del dispositivo). Nota: un aggiornamento del firmware o dell'app può riattivarla da sola."
     }
   }
 }

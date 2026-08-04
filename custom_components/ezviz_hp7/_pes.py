@@ -46,6 +46,13 @@ class PesParser:
         self._buf = bytearray()
         # diagnostics
         self.packets_yielded = 0
+        # Count video PES packets whose PES_scrambling_control is non-zero.
+        # The device sets it when Image/Video Encryption is enabled: the
+        # container and NAL framing stay readable but the payloads are
+        # scrambled, so ffmpeg spins on garbage and it looks exactly like a
+        # demux bug (#41 — three weeks to identify). Detecting it lets us
+        # tell the user plainly instead.
+        self.scrambled_packets = 0
         self.resync_drops = 0
 
     def feed(self, data: bytes) -> List[Tuple[int, bytes]]:
@@ -129,6 +136,8 @@ class PesParser:
                 return 0
             payload_offset = 6
             if _has_optional_header(stream_id):
+                if len(buf) > 6 and (buf[6] >> 4) & 0x03:
+                    self.scrambled_packets += 1
                 if idx < 9:
                     del buf[:idx]
                     return idx
@@ -148,6 +157,8 @@ class PesParser:
 
         payload_offset = 6
         if _has_optional_header(stream_id):
+            if len(buf) > 6 and (buf[6] >> 4) & 0x03:
+                self.scrambled_packets += 1
             if total < 9:
                 del buf[:total]
                 return total

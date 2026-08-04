@@ -250,6 +250,10 @@
     "hevc_webrtc": {
       "title": "HEVC live view on WebRTC mode",
       "description": "Doorbell {serial} streams HEVC/H.265, but Stream mode is set to WebRTC. Browsers can't show HEVC over WebRTC and go2rtc must transcode, which fails on weak hosts (grey screen or 'connection refused').\n\nOpen Configure on the integration and set Stream mode to 'mjpeg' (codec-agnostic, no go2rtc), then Reload. Alternatively, to keep WebRTC, set Video codec to 'hevc' to transcode to H.264."
+    },
+    "stream_encrypted": {
+      "title": "Device is encrypting the video stream",
+      "description": "Doorbell {serial} is scrambling the video stream (Image/Video Encryption is on). The container stays readable but the payloads are scrambled, so ffmpeg cannot decode and the live view stays black.\n\nOpen the EZVIZ app → the device → Settings → **Image/Video Encryption** and turn it off (it asks for the 6-letter device code). Note: a firmware or app update can silently re-enable it."
     }
   }
 }

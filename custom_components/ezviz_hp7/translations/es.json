@@ -250,6 +250,10 @@
     "hevc_webrtc": {
       "title": "Vídeo HEVC en modo WebRTC",
       "description": "El portero {serial} transmite en HEVC/H.265, pero el Modo de visualización está en WebRTC. Los navegadores no muestran HEVC por WebRTC y go2rtc debe transcodificar, lo que falla en hosts poco potentes (pantalla gris o 'connection refused').\n\nAbre Configurar en la integración y pon Modo de visualización en 'mjpeg' (agnóstico al códec, sin go2rtc), luego Recargar. Como alternativa, para mantener WebRTC, pon Códec de vídeo en 'hevc' para transcodificar a H.264."
+    },
+    "stream_encrypted": {
+      "title": "El dispositivo cifra el stream de vídeo",
+      "description": "El videoportero {serial} está cifrando el stream (Image/Video Encryption activado). El contenedor sigue siendo legible pero los datos están cifrados, así que ffmpeg no puede decodificar y el directo queda en negro.\n\nAbre la app EZVIZ → el dispositivo → Ajustes → **Cifrado de imagen/vídeo** y desactívalo (pide el código de 6 letras del dispositivo). Nota: una actualización de firmware o de la app puede reactivarlo solo."
     }
   }
 }

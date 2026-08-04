@@ -250,6 +250,10 @@
     "hevc_webrtc": {
       "title": "Widok na żywo HEVC w trybie WebRTC",
       "description": "Wideodomofon {serial} przesyła strumień w formacie HEVC/H.265, ale tryb strumienia jest ustawiony na WebRTC. Przeglądarki nie potrafią wyświetlić HEVC przez WebRTC, a go2rtc musi go transkodować, co na słabych hostach kończy się niepowodzeniem (szary ekran lub 'connection refused').\n\nKliknij 'Konfiguruj' przy integracji i ustaw tryb strumienia (Stream mode) na 'mjpeg' (niezależny od kodeka, bez go2rtc), a następnie załaduj ponownie. Ewentualnie, aby zachować WebRTC, ustaw kodek wideo (Video codec) na 'hevc', aby dokonać transkodowania do H.264."
+    },
+    "stream_encrypted": {
+      "title": "Urządzenie szyfruje strumień wideo",
+      "description": "Wideodomofon {serial} szyfruje strumień wideo (włączone Image/Video Encryption). Kontener pozostaje czytelny, ale dane są zaszyfrowane, więc ffmpeg nie może dekodować i podgląd pozostaje czarny.\n\nOtwórz aplikację EZVIZ → urządzenie → Ustawienia → **Szyfrowanie obrazu/wideo** i wyłącz je (poprosi o 6-literowy kod urządzenia). Uwaga: aktualizacja firmware'u lub aplikacji może je samoczynnie włączyć ponownie."
     }
   }
 }

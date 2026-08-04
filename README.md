@@ -195,9 +195,9 @@ Based on what users have actually confirmed on hardware — not on what the prot
 | HP7 Pro / HPD7 (HEVC) | ✅ | ✅ | Use `auto` or `mjpeg`; WebRTC can't show HEVC without transcoding |
 | CP7 | ✅ | ✅ | Requires Image/Video Encryption **OFF** |
 | CP5 | ✅ | ❌ | The firmware never authorises the LAN key: CAS keeps returning `1052175` **even with encryption off**. Use the cloud source |
-| HP5 / HPD5 | ✅ | ⚠️ | The LAN session opens and data flows, but the video carries no VPS/SPS/PPS, so nothing decodes ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41) — under investigation). Use the cloud source |
+| HP5 / HPD5 | ✅ | ✅ | Confirmed working ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)). Requires Image/Video Encryption **OFF** — with it on the stream looks structurally valid but decodes to garbage |
 
-**Image / Video Encryption must be OFF for the LAN path on every model.** With it on, the doorbell accepts the session but never emits plaintext video, and the CAS refuses the LAN key (`1052170` / `1052175`). Turn it off in the EZVIZ app under the device's settings (it asks for the 6-letter device code). It does **not** need to be off for the cloud source.
+**Image / Video Encryption must be OFF for the LAN path on every model.** ⚠️ A firmware or app update can **silently re-enable it**, and the failure is deceptive: the container, PES and NAL framing all stay perfectly readable while the payloads are scrambled, so it looks exactly like a decoder bug. Since **0.15.8** the integration detects this itself (via `PES_scrambling_control`) and raises a Repairs notice telling you to turn encryption off, instead of leaving you to debug it. With it on, the doorbell accepts the session but never emits plaintext video, and the CAS refuses the LAN key (`1052170` / `1052175`). Turn it off in the EZVIZ app under the device's settings (it asks for the 6-letter device code). It does **not** need to be off for the cloud source.
 
 A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic. The resolved LAN IP + AES key are cached so the local stream rides out transient EZVIZ cloud 504s.
 
@@ -210,8 +210,10 @@ The relay listens on a random port by default. Set a **Fixed TCP port** (e.g. `8
 go2rtc:
   streams:
     hp7:
-      - tcp://127.0.0.1:8554
+      - "ffmpeg:tcp://127.0.0.1:8554#video=copy"
 ```
+
+> ⚠️ The `ffmpeg:` wrapper matters. go2rtc's native `tcp://` source expects **MPEG-TS**, but the relay serves **MPEG-PS**; with a plain `tcp://` source the RTSP restream answers 404 / "Invalid data" to downstream consumers. Thanks to [@ycmp64](https://github.com/ycmp64) for pinning this down ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)).
 
 go2rtc will publish the stream as:
 
@@ -266,6 +268,7 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 | Live view stuck on `idle` / blank, `Immediate exit requested` or `Invalid data found` in the log | The doorbell streams HEVC, or Image Encryption is on | Set **Stream source = `local`**, **Stream mode = `auto`**, **Video codec = `auto`**, and turn **Image/Video Encryption OFF** in the EZVIZ app |
 | Grey / black picture, or `dial tcp … connection refused` from go2rtc | HEVC on the WebRTC path — browsers can't decode it | Use **Stream mode = `auto`** (picks MJPEG for HEVC automatically) or force `mjpeg` |
 | Snapshot is a blob starting with `hikencodepicture` | Image Encryption is on — the picture is encrypted | Turn Image/Video Encryption **OFF** in the EZVIZ app |
+| Live view black, log says the doorbell is **scrambling** the video (or a Repairs notice appears) | Image/Video Encryption is on — possibly re-enabled by an app/firmware update | Turn Image/Video Encryption **OFF** in the EZVIZ app |
 | `CAS get-encryption failed` / `Result=1052170` / `1052175` | The device won't hand out a LAN key | Encryption **OFF** first. If it persists, your firmware may not support the LAN path at all — see the support table above and use `cloud` |
 | All entities go `unknown` / `unavailable`, sometimes for hours | Transient EZVIZ cloud 504s, or an expired session on an old version | Update: since 0.13.11 the coordinator keeps last-known values through a ~1 min grace window and re-logins automatically. Also **remove any "reload the integration" automation** — it makes outages longer and can trip rate limits |
 | A switch flips back a few seconds after you toggle it | The cloud reports the old state briefly | Fixed in 0.13.21 (the switch holds your value during a grace window) |

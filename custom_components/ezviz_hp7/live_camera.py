@@ -494,6 +494,7 @@ class Hp7StreamRelay:
         # Video queues currently waiting for a keyframe after saturating.
         self._q_resync: set[int] = set()
         self._warned_saturation = False
+        self._warned_scrambled = False
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -726,6 +727,49 @@ class Hp7StreamRelay:
             buf = bytes(self._gop_buf)
         return [buf[i:i + RELAY_CHUNK] for i in range(0, len(buf), RELAY_CHUNK)]
 
+    def _check_scrambled(self, parser: Any) -> None:
+        """Tell the user when the device is scrambling the stream (#41).
+
+        With Image/Video Encryption enabled the container and NAL framing
+        stay perfectly readable while the payloads are scrambled, so ffmpeg
+        spins on garbage and every symptom points at a demux bug. The stream
+        announces the condition itself via PES_scrambling_control, so say so
+        instead of letting people chase it — and note that a firmware or app
+        update can silently re-enable encryption behind the user's back.
+        """
+        if self._warned_scrambled or parser.scrambled_packets < 8:
+            return
+        self._warned_scrambled = True
+        _LOGGER.warning(
+            "Hp7StreamRelay: the doorbell is SCRAMBLING the video "
+            "(PES_scrambling_control set on %d packets, serial=%s). Image/"
+            "Video Encryption is enabled on the device — turn it OFF in the "
+            "EZVIZ app (device Settings) for the LAN stream to decode.",
+            parser.scrambled_packets, self._serial,
+        )
+        if self._hass is not None:
+            try:
+                self._hass.loop.call_soon_threadsafe(self._raise_scrambled_repair)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _raise_scrambled_repair(self) -> None:
+        """Repairs notice for an encrypted stream (loop thread)."""
+        try:
+            from homeassistant.helpers import issue_registry as ir
+
+            ir.async_create_issue(
+                self._hass,
+                DOMAIN,
+                f"stream_encrypted_{self._serial}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="stream_encrypted",
+                translation_placeholders={"serial": self._serial},
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7StreamRelay: could not raise repair: %s", exc)
+
     def _warn_if_hevc_on_webrtc(self, codec: Optional[str]) -> None:
         """Log a one-shot warning when HEVC is seen on the WebRTC path.
 
@@ -803,6 +847,13 @@ class Hp7StreamRelay:
             self._bind_host, self._port, self._serial,
             self._aggressive_mpegts, self._video_codec,
         )
+        if self._diagnostic_dumps:
+            _LOGGER.warning(
+                "Hp7StreamRelay: diagnostic dumps ENABLED — writing stream "
+                "captures to the config dir (serial=%s). Turn the option off "
+                "again once you have collected them.",
+                self._serial,
+            )
         if self._bind_host not in ("127.0.0.1", "localhost", "::1"):
             _LOGGER.warning(
                 "Hp7StreamRelay: relay bound to %s — the raw stream on port "
@@ -982,6 +1033,7 @@ class Hp7StreamRelay:
         self._q_last_drain = {}
         self._q_resync = set()
         self._warned_saturation = False
+        self._warned_scrambled = False
         v_bytes = a_bytes = 0
         # Time-based, not byte-based: at ~400 KB/s a 256 KB threshold emitted
         # an INFO line every ~0.6 s forever — a 24/7 Frigate consumer logged
@@ -1028,6 +1080,7 @@ class Hp7StreamRelay:
                                         guess, self._serial,
                                     )
                                     self._warn_if_hevc_on_webrtc(guess)
+                    self._check_scrambled(parser)
                     if time.monotonic() >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
