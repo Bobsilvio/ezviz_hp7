@@ -79,8 +79,8 @@ Remove unused devices to free at least one slot.
   - 🆔 *(HP7 Pro / HPD7)* `unlock_rfid`, `unlock_face`, `unlock_palm`, `unlock_code`, `unlock_app`
 - **HA event**: `ezviz_hp7_unlock` — fired on every recognised unlock with `{category, alarm_name, alarm_time, serial}` so automations can react to RFID / face / palm / code / app unlocks without polling state.
 - **Services**
-  - `ezviz_hp7.unlock_door`
-  - `ezviz_hp7.unlock_gate`
+  - `ezviz_hp7.unlock_door` / `ezviz_hp7.unlock_gate`
+  - 🔓 `ezviz_hp7.set_video_encryption` — turn the device's Image/Video Encryption on or off with the device verification code. Needed because encryption blocks the LAN stream and **some app versions no longer expose the toggle** (#47)
 - **Login**
   - Account / password / region
   - 🔐 2FA SMS step — the config flow now prompts for the verification code EZVIZ pushes when MFA is enabled, no need to disable 2-step login
@@ -122,10 +122,15 @@ The integration logs in through the EZVIZ API, lists every paired device on the 
 
 After setup, a device card for the **EZVIZ HP7 / CP7 intercom** appears with the entities listed above (the displayed model label tracks whatever the cloud reports for that serial).
 
-Two services are exposed for automations:
+Three services are exposed:
 
-- `ezviz_hp7.unlock_door`
-- `ezviz_hp7.unlock_gate`
+| Service | What it does |
+|---|---|
+| `ezviz_hp7.unlock_door` | Opens the door (lock #2) |
+| `ezviz_hp7.unlock_gate` | Opens the gate (lock #1) |
+| `ezviz_hp7.set_video_encryption` | Turns the device's Image/Video Encryption on or off |
+
+`serial` is optional on all three — omit it with a single configured device.
 
 Example automation:
 
@@ -140,6 +145,21 @@ action:
     data:
       serial: BEXXXXXXXX-BEXXXXXXXX
 ```
+
+### Turning off Image/Video Encryption without the app
+
+Encryption must be **off** for the LAN stream to decode (see [Live video](#-live-video)). Normally you disable it in the EZVIZ app, but **some app versions no longer show the toggle at all** ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) — the cloud API still accepts it, so the integration exposes it directly. Run it once from **Developer Tools → Actions**:
+
+```yaml
+action: ezviz_hp7.set_video_encryption
+data:
+  enable: false
+  verification_code: "ABCDEF"   # 6 characters, printed on the device label / QR sticker
+```
+
+The verification code is the one the app asks for when opening the camera view — the letters on the sticker, **not** your account password. It is required by design: this changes a security setting, and the integration never touches it on its own.
+
+Afterwards reload the integration and open the live view. To re-enable encryption later, call the same service with `enable: true`.
 
 ---
 
@@ -268,7 +288,7 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 | Live view stuck on `idle` / blank, `Immediate exit requested` or `Invalid data found` in the log | The doorbell streams HEVC, or Image Encryption is on | Set **Stream source = `local`**, **Stream mode = `auto`**, **Video codec = `auto`**, and turn **Image/Video Encryption OFF** in the EZVIZ app |
 | Grey / black picture, or `dial tcp … connection refused` from go2rtc | HEVC on the WebRTC path — browsers can't decode it | Use **Stream mode = `auto`** (picks MJPEG for HEVC automatically) or force `mjpeg` |
 | Snapshot is a blob starting with `hikencodepicture` | Image Encryption is on — the picture is encrypted | Turn Image/Video Encryption **OFF** in the EZVIZ app |
-| Live view black, log says the doorbell is **scrambling** the video (or a Repairs notice appears) | Image/Video Encryption is on — possibly re-enabled by an app/firmware update | Turn Image/Video Encryption **OFF** in the EZVIZ app |
+| Live view black, log says the doorbell is **scrambling** the video (or a Repairs notice appears) | Image/Video Encryption is on — possibly re-enabled by an app/firmware update | Turn it **OFF** in the EZVIZ app, or — if your app version doesn't show the toggle — call [`ezviz_hp7.set_video_encryption`](#turning-off-imagevideo-encryption-without-the-app) with `enable: false` |
 | `CAS get-encryption failed` / `Result=1052170` / `1052175` | The device won't hand out a LAN key | Encryption **OFF** first. If it persists, your firmware may not support the LAN path at all — see the support table above and use `cloud` |
 | All entities go `unknown` / `unavailable`, sometimes for hours | Transient EZVIZ cloud 504s, or an expired session on an old version | Update: since 0.13.11 the coordinator keeps last-known values through a ~1 min grace window and re-logins automatically. Also **remove any "reload the integration" automation** — it makes outages longer and can trip rate limits |
 | A switch flips back a few seconds after you toggle it | The cloud reports the old state briefly | Fixed in 0.13.21 (the switch holds your value during a grace window) |
