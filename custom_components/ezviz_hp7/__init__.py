@@ -182,11 +182,74 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
+    _async_register_services(hass)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     
     return True
+
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register the integration's services (idempotent).
+
+    services.yaml and the README have advertised unlock_door / unlock_gate
+    since early releases, but nothing ever registered them, so calling them
+    from an automation failed. Registered here, together with the encryption
+    toggle needed when the EZVIZ app hides it (#47).
+    """
+    if hass.services.has_service(DOMAIN, "unlock_door"):
+        return
+
+    def _first_api() -> Hp7Api | None:
+        for data in hass.data.get(DOMAIN, {}).values():
+            api = data.get("api")
+            if api is not None:
+                return api
+        return None
+
+    def _resolve(call_serial: str | None) -> tuple[Any, str] | None:
+        for data in hass.data.get(DOMAIN, {}).values():
+            serial = data.get("serial")
+            if call_serial in (None, "", serial):
+                return data.get("api"), serial
+        api = _first_api()
+        return (api, call_serial) if api and call_serial else None
+
+    async def _unlock(call, gate: bool) -> None:
+        target = _resolve(call.data.get("serial"))
+        if target is None:
+            _LOGGER.error("EZVIZ HP7: no configured device for this service call")
+            return
+        api, serial = target
+        fn = api.unlock_gate if gate else api.unlock_door
+        await hass.async_add_executor_job(fn, serial)
+
+    async def _handle_unlock_gate(call) -> None:
+        await _unlock(call, gate=True)
+
+    async def _handle_unlock_door(call) -> None:
+        await _unlock(call, gate=False)
+
+    async def _handle_set_encryption(call) -> None:
+        target = _resolve(call.data.get("serial"))
+        if target is None:
+            _LOGGER.error("EZVIZ HP7: no configured device for this service call")
+            return
+        api, serial = target
+        await hass.async_add_executor_job(
+            api.set_video_encryption,
+            serial,
+            bool(call.data.get("enable", False)),
+            str(call.data.get("verification_code", "")),
+        )
+
+    hass.services.async_register(DOMAIN, "unlock_gate", _handle_unlock_gate)
+    hass.services.async_register(DOMAIN, "unlock_door", _handle_unlock_door)
+    hass.services.async_register(
+        DOMAIN, "set_video_encryption", _handle_set_encryption
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

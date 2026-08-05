@@ -10,3 +10,17 @@ unlock_door:
       required: true
       selector:
         text:
+set_video_encryption:
+  fields:
+    serial:
+      required: false
+      selector:
+        text:
+    enable:
+      required: true
+      selector:
+        boolean:
+    verification_code:
+      required: true
+      selector:
+        text:

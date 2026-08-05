@@ -732,6 +732,40 @@ class Hp7Api:
                 return value[0]
         return None
 
+    def set_video_encryption(
+        self, serial: str, enable: bool, verification_code: str
+    ) -> bool:
+        """Turn the device's Image/Video Encryption on or off.
+
+        Encryption blocks the LAN stream entirely (#33/#39/#41/#47): the
+        device keeps emitting a structurally valid container whose payloads
+        are scrambled. Some app versions no longer expose the toggle at all
+        (#47), and a firmware update can silently re-enable it (#41), so
+        offer it here. Requires the 6-character verification code printed on
+        the device label — this changes a security setting, so it is never
+        done automatically.
+        """
+        self.ensure_client()
+        if not self._client:
+            return False
+        try:
+            self._client.set_video_enc(
+                serial,
+                enable=1 if enable else 0,
+                camera_verification_code=verification_code,
+            )
+            _LOGGER.info(
+                "EZVIZ HP7: video encryption set to %s for %s",
+                "ON" if enable else "OFF", serial,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error(
+                "EZVIZ HP7: could not change video encryption for %s: %s",
+                serial, exc,
+            )
+            raise
+
     @staticmethod
     def _read_night_light_state(info: dict[str, Any]) -> bool | None:
         """Read the HPD7 name-plate LED from the IoT FEATURE tree (#34).
