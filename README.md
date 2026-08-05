@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <strong>Live video (H.264 + AAC)</strong> • <strong>Door/gate unlock</strong> • <strong>Multi-monitor chime</strong> • <strong>Unlock events (RFID / face / palm / code / app)</strong> • <strong>2FA SMS login</strong>
+  <strong>Live video (H.264 / HEVC + AAC)</strong> • <strong>Door/gate unlock</strong> • <strong>Multi-monitor chime</strong> • <strong>Unlock events (RFID / face / palm / code / app)</strong> • <strong>2FA SMS login</strong>
 </p>
 
 ---
@@ -53,8 +53,8 @@ Remove unused devices to free at least one slot.
   - 🚪 Unlock **gate** (lock #1 by default)
 - **Cameras**
   - 📷 **Last-alarm snapshot** (fetched from EZVIZ cloud)
-  - 🎥 **Live video** (`camera.<...>_live`) — H.264 **and HEVC**, via the **EZVIZ VTM cloud relay** (works over WAN) **or a direct LAN stream** (CPD7, bypasses the cloud, lower latency). Two delivery modes: **WebRTC/HLS** (with audio) or **MJPEG** (codec-agnostic, robust for HEVC + multiple viewers). See the *Live video* section below for the full option matrix.
-- **Switches**
+  - 🎥 **Live video** (`camera.<...>_live`) — H.264 **and HEVC**, via the **EZVIZ VTM cloud relay** (works over WAN) **or a direct LAN stream** (CPD7, bypasses the cloud, lower latency). Delivery is **auto** by default (probes the codec and picks for you), or force **WebRTC/HLS** (with audio) or **MJPEG** (codec-agnostic, robust for HEVC + multiple viewers). See the *Live video* section below for the full option matrix.
+- **Switches** — *(beta)* below means wired against the EZVIZ API and working for the author, but **not yet confirmed by a second user on different firmware**; report back either way
   - 🔔 `chime_sound` — doorbell button chime on the camera unit
   - 🔔 `chime_sound_monitor` — chime on each configured indoor monitor (multi-monitor friendly — HP7 bifamigliare)
   - 🛎️ `chime_pir` / `chime_pir_monitor` — motion sound notification on / off
@@ -166,7 +166,16 @@ action:
       entity_id: alarm_control_panel.home
 ```
 
-> ℹ️ EZVIZ does **not** report *which* card or face was used — the cloud only says "Card" / "Face". This was checked against the official app with a packet capture ([#32](https://github.com/Bobsilvio/ezviz_hp7/issues/32)); the app itself shows no more detail. Use `category` to know *how* the door was opened, not *by whom*.
+#### What the unlock event can and cannot tell you
+
+| | |
+|---|---|
+| ✅ **How** the door was opened | `category` — `unlock_rfid`, `unlock_face`, `unlock_palm`, `unlock_code`, `unlock_app` |
+| ✅ **Which credentials are enrolled** | `keys` — the list from the device, with the names you gave them in the app ("Badge 1", "RFID Anna") |
+| ⚠️ **Who** used it | `card_name` is included **only when exactly one credential is enabled**, where it is a safe inference. With two or more enrolled, it is omitted |
+| ❌ Identifying the specific card with several enrolled | Not possible — see below |
+
+EZVIZ simply does not publish the link between an unlock event and the credential that caused it: `cardNo`, `userId`, `recExtraInfo` and `analysisResult` all come back null, and `customerInfo` is just `{"object":"Card"}`. This was confirmed by packet-capturing the official app while opening an event's detail view — **the app itself shows no more than we do** ([#32](https://github.com/Bobsilvio/ezviz_hp7/issues/32)). So with two or more cards, treat RFID as "someone with a valid card", not as identification.
 
 ### Turning off Image/Video Encryption without the app
 
@@ -187,7 +196,7 @@ Afterwards reload the integration and open the live view. To re-enable encryptio
 
 ## 🚧 Limitations
 
-- Currently supports **one HP7 / CP7 device per account entry** (multi-device support planned — multiple devices can be added today by repeating the config-entry setup).
+- One doorbell per config entry. Several devices work fine — add the integration once per serial; they share the account session.
 - Switch state is read back via cloud polling, so a change made in the EZVIZ app appears after the next poll cycle. Changes made *from Home Assistant* apply immediately: the switch holds the value you set for a short grace window, because the EZVIZ cloud takes a few seconds to report a write back and would otherwise make the toggle appear to bounce.
 - Two-way audio (talkback) is not implemented. Inbound audio is carried on the **`webrtc`** stream mode (AAC); the **`mjpeg`** mode is video-only.
 
@@ -207,7 +216,7 @@ The HP7 / CP7 don't expose RTSP or ONVIF and don't register on the Hik-Connect U
 
 > **`local` requires Image/Video Encryption to be OFF** in the EZVIZ app (device Settings). With encryption on, the camera accepts the connection but never emits plaintext bytes. The integration surfaces a clear hint if it detects this.
 
-### Stream mode: `webrtc` vs `mjpeg`
+### Stream mode: `auto` / `webrtc` / `mjpeg`
 
 | Mode | Delivery | Audio | HEVC | Notes |
 |---|---|---|---|---|
