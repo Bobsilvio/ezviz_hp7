@@ -228,6 +228,8 @@ Based on what users have actually confirmed on hardware — not on what the prot
 
 **Image / Video Encryption must be OFF for the LAN path on every model.** ⚠️ A firmware or app update can **silently re-enable it**, and the failure is deceptive: the container, PES and NAL framing all stay perfectly readable while the payloads are scrambled, so it looks exactly like a decoder bug. Since **0.15.8** the integration detects this itself (via `PES_scrambling_control`) and raises a Repairs notice telling you to turn encryption off, instead of leaving you to debug it. With it on, the doorbell accepts the session but never emits plaintext video, and the CAS refuses the LAN key (`1052170` / `1052175`). Turn it off in the EZVIZ app under the device's settings (it asks for the 6-letter device code). It does **not** need to be off for the cloud source.
 
+While a LAN stream has viewers the coordinator automatically drops to a quarter of its normal polling rate and snaps back when the last viewer disconnects. Several of the endpoints we poll are proxied by the cloud down to the doorbell itself, and answering them competes with its streaming task, so sensors updating a little more slowly during live view is deliberate.
+
 A circuit-breaker rate-limits viewing attempts (30 s between retries, 10 min cool-down after 3 consecutive failures) so a transient cloud error can't trigger the EZVIZ account-lock heuristic. The resolved LAN IP + AES key are cached so the local stream rides out transient EZVIZ cloud 504s.
 
 ### Exposing the live stream as RTSP (go2rtc / Frigate)
@@ -311,6 +313,22 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 Hp7StreamRelay: broadcast LAN MPEG-PS progress <bytes> audio=<bytes> subs=<N> kf_markers=<N> drops=<N>
 [MJPEG] session END ... frames=<N> stale_dropped=<N> blocked=<N>s reason=...
 ```
+
+### Reading those numbers
+
+They were added while chasing a stubborn stall ([#44](https://github.com/Bobsilvio/ezviz_hp7/issues/44)) and each one rules something in or out, so they're worth understanding before assuming where a problem is:
+
+| Field | What it tells you |
+|---|---|
+| `progress <bytes>` / `audio=` | Whether video and audio are still **arriving from the doorbell**. Video frozen while audio keeps climbing means the fault is in the video path specifically, not the session or the network |
+| `kf_markers=` | Keyframes seen. Still rising = the device is streaming normally; stuck = the LAN session died |
+| `subs=` | Subscribers on the relay. Should roughly match your viewers — every dashboard card, Frigate role and preview is one, and **each costs its own ffmpeg** |
+| `drops=` | Chunks the relay had to discard. Climbing means a consumer can't keep up (HA side); zero while the picture misbehaves means the problem is upstream or downstream, not the queues |
+| `blocked=` | Seconds spent waiting on the **viewer's** HTTP connection. A large share of the session duration means the browser or network is the bottleneck; a tiny value exonerates it |
+| `stale_dropped=` | Frames skipped because the viewer was behind. Nonzero is normal and healthy — it's how the live view stays current instead of accumulating delay |
+| `reason=` | `client_disconnected` is normal (you closed the view). `ffmpeg_eof` means the pipeline ended on its own and is worth reporting |
+
+The pairing that identifies most problems fastest is **video vs audio**: they travel on separate queues into the same ffmpeg, so if one keeps working while the other stops, that alone narrows the cause enormously.
 
 > ⚠️ `ps aux | grep ffmpeg` run from the SSH/Terminal add-on always returns 0 — that container has its own process namespace and cannot see Home Assistant's processes. It is not a useful measurement.
 
