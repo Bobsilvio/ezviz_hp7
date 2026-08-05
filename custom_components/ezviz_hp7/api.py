@@ -748,23 +748,46 @@ class Hp7Api:
         self.ensure_client()
         if not self._client:
             return False
-        try:
-            self._client.set_video_enc(
-                serial,
-                enable=1 if enable else 0,
-                camera_verification_code=verification_code,
-            )
-            _LOGGER.info(
-                "EZVIZ HP7: video encryption set to %s for %s",
-                "ON" if enable else "OFF", serial,
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.error(
-                "EZVIZ HP7: could not change video encryption for %s: %s",
-                serial, exc,
-            )
-            raise
+        code = (verification_code or "").strip().upper()
+        # The verification code belongs to the physical doorbell, so the bare
+        # serial is the one that matches it. Sending the composite
+        # MAIN-CAM serial makes EZVIZ answer 1011 "verification code
+        # incorrect" even when the code is right (#47). Try bare first, then
+        # the serial as given, since which form an endpoint wants has varied
+        # (CAS needs bare, the IoT feature writes need the composite).
+        candidates = [self._bare_serial(serial)]
+        if serial not in candidates:
+            candidates.append(serial)
+        last_exc: Exception | None = None
+        for candidate in candidates:
+            try:
+                self._client.set_video_enc(
+                    candidate,
+                    enable=1 if enable else 0,
+                    camera_verification_code=code,
+                )
+                _LOGGER.info(
+                    "EZVIZ HP7: video encryption set to %s (serial=%s)",
+                    "ON" if enable else "OFF", candidate,
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                _LOGGER.warning(
+                    "EZVIZ HP7: video encryption change rejected for %s: %s",
+                    candidate, exc,
+                )
+        _LOGGER.error(
+            "EZVIZ HP7: could not change video encryption for %s. If this is "
+            "'1011 / verification code incorrect', check the 6-character code "
+            "on the device label — note that it is NOT your account password, "
+            "and if the encryption password was ever changed in the app it is "
+            "that password EZVIZ wants here.",
+            serial,
+        )
+        if last_exc is not None:
+            raise last_exc
+        return False
 
     @staticmethod
     def _read_night_light_state(info: dict[str, Any]) -> bool | None:
