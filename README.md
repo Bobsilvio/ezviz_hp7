@@ -39,6 +39,8 @@ EZVIZ app → User → Login settings → Manage terminals
 
 Remove unused devices to free at least one slot.
 
+**Running the official EZVIZ integration (or another fork) at the same time counts against that limit** and the two compete for the same account session, which shows up as random login failures or entities dropping out. Users hitting this have had best results removing the other integration, restarting Home Assistant, then adding this one ([#35](https://github.com/Bobsilvio/ezviz_hp7/issues/35)).
+
 ---
 
 ## ✨ Features
@@ -145,6 +147,26 @@ action:
     data:
       serial: BEXXXXXXXX-BEXXXXXXXX
 ```
+
+### Reacting to unlocks in automations
+
+The `unlock_*` binary sensors pulse for 3 s, which is convenient for dashboards but easy to miss in an automation. For anything that must not be missed — disarming an alarm, logging who came in — trigger on the **event** instead: it carries the category and the raw alarm name in one payload, and can't be missed between polls.
+
+```yaml
+alias: Disarm alarm when someone unlocks the door
+trigger:
+  - platform: event
+    event_type: ezviz_hp7_unlock
+condition:
+  - condition: template
+    value_template: "{{ trigger.event.data.category in ['unlock_rfid', 'unlock_face', 'unlock_palm'] }}"
+action:
+  - service: alarm_control_panel.alarm_disarm
+    target:
+      entity_id: alarm_control_panel.home
+```
+
+> ℹ️ EZVIZ does **not** report *which* card or face was used — the cloud only says "Card" / "Face". This was checked against the official app with a packet capture ([#32](https://github.com/Bobsilvio/ezviz_hp7/issues/32)); the app itself shows no more detail. Use `category` to know *how* the door was opened, not *by whom*.
 
 ### Turning off Image/Video Encryption without the app
 
