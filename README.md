@@ -18,6 +18,8 @@
   <strong>Live video (H.264 / HEVC + AAC)</strong> • <strong>Door/gate unlock</strong> • <strong>Multi-monitor chime</strong> • <strong>Unlock events (RFID / face / palm / code / app)</strong> • <strong>2FA SMS login</strong>
 </p>
 
+<p align="center">🇮🇹 <a href="README.it.md">Versione italiana</a></p>
+
 ---
 
 Custom Home Assistant integration for the **EZVIZ HP7 and CP7 video intercoms** (and their close siblings — HP5, CP5, DP1, DP2). HP7 is the original target; CP7 shares the same cloud APIs and live-stream protocol, so it works through the same code path. The device model is auto-detected from the cloud (`deviceSubCategory` / `deviceType`) and shown in the Home Assistant device card.

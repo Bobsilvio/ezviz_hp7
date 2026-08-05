@@ -2,143 +2,183 @@
   "config": {
     "step": {
       "user": {
-        "title": "Collega EZVIZ HP7 / CP7",
-        "description": "Inserisci le credenziali EZVIZ e la regione.",
+        "title": "Connect EZVIZ HP7 / CP7",
+        "description": "Enter your EZVIZ credentials and region.",
         "data": {
-          "username": "Nome utente",
+          "username": "Username",
           "password": "Password",
-          "region": "Regione"
+          "region": "Region"
         }
       },
       "pick_serial": {
-        "title": "Seleziona dispositivo",
-        "description": "Scegli il serial del tuo HP7 / CP7.",
+        "title": "Select Device",
+        "description": "Choose the serial number of your HP7 / CP7.",
         "data": {
-          "serial": "Numero di serie"
+          "serial": "Serial Number"
         }
       },
       "enter_serial": {
-        "title": "Inserisci numero di serie",
-        "description": "Inserisci manualmente il numero di serie del tuo HP7 / CP7.",
+        "title": "Enter Serial Number",
+        "description": "Manually enter the serial number of your HP7 / CP7.",
         "data": {
-          "serial": "Numero di serie"
+          "serial": "Serial Number"
         }
       },
       "sms": {
-        "title": "Verifica SMS",
-        "description": "Inserisci il codice SMS che ti è stato inviato da EZVIZ per completare il login a due fattori.",
+        "title": "SMS Verification",
+        "description": "Enter the SMS code EZVIZ sent you to complete two-factor authentication.",
         "data": {
-          "sms_code": "Codice SMS"
+          "sms_code": "SMS code"
         }
       }
     },
     "error": {
-      "auth": "Login fallito. Controlla credenziali/region.",
-      "invalid_sms": "Codice SMS non valido. Riprova."
+      "auth": "Login failed. Check credentials/region.",
+      "invalid_sms": "Invalid SMS code, please retry."
     },
     "abort": {
-      "no_devices": "Nessun dispositivo trovato nell'account.",
-      "already_configured": "Dispositivo già configurato"
+      "no_devices": "No devices found in account.",
+      "already_configured": "Device is already configured"
     }
   },
   "entity": {
     "sensor": {
       "name": {
-        "name": "Nome Dispositivo"
+        "name": "Device Name"
       },
       "version": {
         "name": "Firmware"
       },
       "status": {
-        "name": "Stato",
+        "name": "Status",
         "state": {
           "online": "online",
           "offline": "offline"
         }
       },
       "signal": {
-        "name": "WiFi Segnale"
+        "name": "WiFi Signal"
       },
       "ssid": {
-        "name": "SSID WiFi"
+        "name": "WiFi SSID"
       },
       "local_ip": {
-        "name": "IP Locale"
+        "name": "Local IP"
       },
       "wan_ip": {
-        "name": "IP WAN"
-      },
-      "pir_status": {
-        "name": "PIR Movimento",
-        "state": {
-          "active": "attivo",
-          "inactive": "inattivo"
-        }
+        "name": "WAN IP"
       },
       "motion": {
-        "name": "Movimento",
+        "name": "Motion",
         "state": {
-          "detected": "rilevato",
-          "none": "nessuno"
+          "detected": "detected",
+          "none": "none"
         }
       },
       "last_alarm_time": {
-        "name": "Ultimo Allarme"
+        "name": "Last Alarm"
       },
       "alarm_name": {
-        "name": "Tipo Allarme"
+        "name": "Alarm Type"
       },
       "seconds_last_trigger": {
-        "name": "Secondi Ultimo Movimento"
+        "name": "Seconds Since Last Motion"
       },
       "upgrade_available": {
-        "name": "Aggiornamento Disponibile",
+        "name": "Update Available",
         "state": {
-          "yes": "sì",
+          "yes": "yes",
           "no": "no"
         }
       },
       "mic_volume": {
-        "name": "Volume Microfono"
+        "name": "Microphone Volume"
+      }
+    },
+    "binary_sensor": {
+      "motion_trigger": {
+        "name": "Motion Detection"
+      },
+      "smart_detection_alarm": {
+        "name": "Smart Detection Alarm"
+      },
+      "intelligent_detection_alarm": {
+        "name": "Intelligent Detection"
+      },
+      "doorbell_ringing": {
+        "name": "Doorbell Ringing"
+      },
+      "gate_open": {
+        "name": "Gate Open"
+      },
+      "unlock_lock": {
+        "name": "Lock Unlocked"
+      },
+      "unlock_rfid": {
+        "name": "RFID Unlock"
+      },
+      "unlock_face": {
+        "name": "Face Unlock"
+      },
+      "unlock_palm": {
+        "name": "Palm Unlock"
+      },
+      "unlock_code": {
+        "name": "Code Unlock"
+      },
+      "unlock_app": {
+        "name": "App Unlock"
+      },
+      "feature_mute": {
+        "name": "Mute"
+      },
+      "feature_loitering": {
+        "name": "Loitering Detection"
+      },
+      "feature_stranger_detection": {
+        "name": "Stranger Detection"
+      },
+      "feature_human_detection": {
+        "name": "Human Detection"
       }
     },
     "button": {
       "unlock_gate": {
-        "name": "Sblocca Cancello"
+        "name": "Unlock Gate"
       },
       "unlock_door": {
-        "name": "Sblocca Porta"
+        "name": "Unlock Door"
       }
     },
     "switch": {
       "chime_sound": {
-        "name": "Suono Campanello"
+        "name": "Doorbell Chime"
       },
       "chime_sound_monitor": {
-        "name": "Suono Monitor Interno"
+        "name": "Indoor Monitor Chime"
       },
       "dnd": {
-        "name": "Non Disturbare"
+        "name": "Do Not Disturb"
       },
       "privacy": {
         "name": "Privacy"
       },
       "defence": {
-        "name": "Allarme Armato"
+        "name": "Armed"
       },
       "label_light": {
-        "name": "Luce Targhetta"
+        "name": "Name Tag Light"
       },
       "chime_pir": {
-        "name": "Allerta Movimento"
+        "name": "Motion Sound Alert"
       },
       "chime_pir_monitor": {
-        "name": "Allerta Movimento Monitor"
+        "name": "Monitor Motion Sound Alert"
       }
     },
     "camera": {
       "last_snapshot": {
-        "name": "Ultima Istantanea"
+        "name": "Last Snapshot"
       },
       "live": {
         "name": "Live"
@@ -146,72 +186,43 @@
     },
     "number": {
       "chime_volume": {
-        "name": "Volume Campanello"
+        "name": "Doorbell Volume"
       },
       "chime_volume_monitor": {
-        "name": "Volume Monitor"
+        "name": "Monitor Volume"
       },
       "chime_ringtone": {
-        "name": "Suoneria Campanello"
+        "name": "Doorbell Ringtone"
       },
       "chime_pir_ringtone": {
-        "name": "Suoneria Movimento"
+        "name": "Motion Ringtone"
       },
       "chime_ringtone_monitor": {
-        "name": "Suoneria Campanello Monitor"
+        "name": "Monitor Doorbell Ringtone"
       },
       "chime_pir_ringtone_monitor": {
-        "name": "Suoneria Movimento Monitor"
-      }
-    },
-    "binary_sensor": {
-      "unlock_rfid": {
-        "name": "Sblocco RFID"
-      },
-      "unlock_face": {
-        "name": "Sblocco Volto"
-      },
-      "unlock_palm": {
-        "name": "Sblocco Palmo"
-      },
-      "unlock_code": {
-        "name": "Sblocco Codice"
-      },
-      "unlock_app": {
-        "name": "Sblocco App"
-      },
-      "feature_mute": {
-        "name": "Muto"
-      },
-      "feature_loitering": {
-        "name": "Rilevamento Sosta"
-      },
-      "feature_stranger_detection": {
-        "name": "Rilevamento Estranei"
-      },
-      "feature_human_detection": {
-        "name": "Rilevamento Persone"
+        "name": "Monitor Motion Ringtone"
       }
     }
   },
   "services": {
     "unlock_gate": {
-      "name": "Sblocca cancello",
-      "description": "Sblocca il cancello via cloud EZVIZ.",
+      "name": "Unlock gate",
+      "description": "Unlock the gate via EZVIZ cloud.",
       "fields": {
         "serial": {
-          "name": "Numero di serie",
-          "description": "Numero di serie del dispositivo"
+          "name": "Serial number",
+          "description": "Device serial number"
         }
       }
     },
     "unlock_door": {
-      "name": "Sblocca porta",
-      "description": "Sblocca la porta via cloud EZVIZ.",
+      "name": "Unlock door",
+      "description": "Unlock the door via EZVIZ cloud.",
       "fields": {
         "serial": {
-          "name": "Numero di serie",
-          "description": "Numero di serie del dispositivo"
+          "name": "Serial number",
+          "description": "Device serial number"
         }
       }
     }
@@ -219,30 +230,30 @@
   "options": {
     "step": {
       "init": {
-        "title": "Opzioni EZVIZ HP7 / CP7",
-        "description": "Inserisci il serial del monitor interno (o più serial separati da virgola per HP7 bifamigliare) per esporre uno switch dedicato per ogni monitor. Vuoto = nessun monitor.",
+        "title": "EZVIZ HP7 / CP7 options",
+        "description": "Enter the indoor monitor serial (or several serials separated by commas for the HP7 two-family setup) to expose a dedicated switch per monitor. Empty = no monitor.",
         "data": {
-          "monitor_serial": "Serial monitor interno",
-          "relay_port": "Porta TCP fissa relay (0 = casuale, suggerito 8554 per go2rtc/mediamtx)",
-          "relay_bind": "Host di ascolto del relay (127.0.0.1 = solo locale, default sicuro; 0.0.0.0 espone lo stream raw NON autenticato ad altri host, es. Frigate — solo reti fidate, richiede porta fissa)",
-          "aggressive_mpegts": "Compatibilità MPEG-TS aggressiva (abilita se vedi 'Immediate exit requested' nei log; sicuro lasciarlo OFF di default)",
-          "video_codec": "Codec video (auto = rileva; hevc transcodifica H.265 in H.264 per WebRTC; hevc_copy passa H.265 inalterato per host deboli / Frigate / Safari)",
-          "stream_source": "Sorgente stream (cloud = relay VTM EZVIZ; local = LAN diretta, bypassa il cloud e risolve 'live assente' sui firmware che non pushano al cloud — richiede HA sulla stessa rete del citofono; auto = prova local poi cloud)",
-          "stream_mode": "Modalità live (auto = default: rileva il codec e sceglie da solo — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, con audio + bassa latenza ma non mostra HEVC senza transcodifica; mjpeg = ffmpeg per-viewer in motion-JPEG, codec-agnostico e robusto per HEVC/multi-viewer ma senza audio)",
-          "stream_quality": "Qualità stream LAN (main = piena risoluzione; sub = flusso a bassa risoluzione del dispositivo, molto più leggero da decodificare — usalo se il video accumula ritardo su host deboli tipo Raspberry. Solo sorgente 'local')",
-          "diagnostic_dumps": "Dump diagnostici (scrive due file .bin in /config con l'inizio dello stream, solo per analisi quando segnali un problema video. Lascia OFF: sono inutili nell'uso normale)"
+          "monitor_serial": "Indoor monitor serial",
+          "relay_port": "Fixed TCP port for the live relay (0 = random, suggested 8554 for go2rtc / mediamtx)",
+          "relay_bind": "Relay listen host (127.0.0.1 = local-only, safe default; 0.0.0.0 exposes the UNAUTHENTICATED raw stream to other hosts, e.g. Frigate — trusted networks only, requires a fixed port)",
+          "aggressive_mpegts": "Aggressive MPEG-TS compatibility (enable if you see 'Immediate exit requested' in logs; safe to leave OFF by default)",
+          "video_codec": "Video codec (auto = detect; hevc transcodes H.265 to H.264 for WebRTC; hevc_copy passes H.265 through untouched for low-power hosts / Frigate / Safari)",
+          "stream_source": "Stream source (cloud = EZVIZ VTM relay; local = direct LAN, bypasses the cloud and fixes 'no live' on firmware that won't push to the cloud — needs HA on the same network as the doorbell; auto = try local then cloud)",
+          "stream_mode": "Live view delivery (auto = default: detects the codec and picks for you — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, has audio + low latency but can't show HEVC without transcoding; mjpeg = per-viewer ffmpeg to motion-JPEG, codec-agnostic and robust for HEVC/multi-viewer but no audio)",
+          "stream_quality": "LAN stream quality (main = full resolution; sub = the device's low-resolution substream, far cheaper to decode — use it if video accumulates delay on a weak host such as a Raspberry Pi. Applies to the 'local' source only)",
+          "diagnostic_dumps": "Diagnostic dumps (writes two .bin files in /config capturing the start of the stream, for bitstream analysis when reporting a video problem. Leave OFF: not useful in normal operation)"
         }
       }
     }
   },
   "issues": {
     "hevc_webrtc": {
-      "title": "Live HEVC in modalità WebRTC",
-      "description": "Il citofono {serial} trasmette in HEVC/H.265, ma la modalità live è impostata su WebRTC. I browser non mostrano l'HEVC via WebRTC e go2rtc deve transcodificare, cosa che sugli host deboli fallisce (schermo grigio o 'connection refused').\n\nApri Configura sull'integrazione e imposta Modalità live su 'mjpeg' (codec-agnostica, senza go2rtc), poi Ricarica. In alternativa, per mantenere WebRTC, imposta Codec video su 'hevc' per transcodificare in H.264."
+      "title": "HEVC live view on WebRTC mode",
+      "description": "Doorbell {serial} streams HEVC/H.265, but Stream mode is set to WebRTC. Browsers can't show HEVC over WebRTC and go2rtc must transcode, which fails on weak hosts (grey screen or 'connection refused').\n\nOpen Configure on the integration and set Stream mode to 'mjpeg' (codec-agnostic, no go2rtc), then Reload. Alternatively, to keep WebRTC, set Video codec to 'hevc' to transcode to H.264."
     },
     "stream_encrypted": {
-      "title": "Stream video cifrato dal dispositivo",
-      "description": "Il citofono {serial} sta cifrando il flusso video (Image/Video Encryption attiva). Il contenitore resta leggibile ma i dati sono scrambled, quindi ffmpeg non riesce a decodificare e il live resta nero.\n\nApri l'app EZVIZ → il dispositivo → Impostazioni → **Crittografia immagini/video** e disattivala (chiede il codice a 6 lettere del dispositivo). Nota: un aggiornamento del firmware o dell'app può riattivarla da sola."
+      "title": "Device is encrypting the video stream",
+      "description": "Doorbell {serial} is scrambling the video stream (Image/Video Encryption is on). The container stays readable but the payloads are scrambled, so ffmpeg cannot decode and the live view stays black.\n\nOpen the EZVIZ app → the device → Settings → **Image/Video Encryption** and turn it off (it asks for the 6-letter device code). Note: a firmware or app update can silently re-enable it."
     }
   }
 }
