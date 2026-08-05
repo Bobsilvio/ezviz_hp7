@@ -758,24 +758,37 @@ class Hp7Api:
         candidates = [self._bare_serial(serial)]
         if serial not in candidates:
             candidates.append(serial)
+        # EZVIZ only validates the code when DISABLING. Some firmware wants
+        # the current encryption password in oldPassword as well as
+        # validateCode; the password defaults to the verification code, so
+        # send it both ways rather than assuming which field is checked
+        # (#47: 1011 with a code confirmed correct in the app).
+        payloads: list[dict[str, Any]] = [{}]
+        if not enable:
+            payloads.append({"old_password": code})
         last_exc: Exception | None = None
         for candidate in candidates:
+          for extra in payloads:
             try:
                 self._client.set_video_enc(
                     candidate,
                     enable=1 if enable else 0,
                     camera_verification_code=code,
+                    **extra,
                 )
                 _LOGGER.info(
-                    "EZVIZ HP7: video encryption set to %s (serial=%s)",
+                    "EZVIZ HP7: video encryption set to %s (serial=%s, "
+                    "variant=%s)",
                     "ON" if enable else "OFF", candidate,
+                    "oldPassword" if extra else "validateCode",
                 )
                 return True
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 _LOGGER.warning(
-                    "EZVIZ HP7: video encryption change rejected for %s: %s",
-                    candidate, exc,
+                    "EZVIZ HP7: video encryption rejected (serial=%s "
+                    "variant=%s): %s",
+                    candidate, "oldPassword" if extra else "validateCode", exc,
                 )
         _LOGGER.error(
             "EZVIZ HP7: could not change video encryption for %s. If this is "
