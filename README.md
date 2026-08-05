@@ -197,7 +197,16 @@ Since **0.13.14** the default is **`auto`**: at startup it sniffs the codec and 
 
 ### Video codec: `auto` / `h264` / `hevc` / `hevc_copy`
 
-Newer HP7 (HPD7) and CP7 firmware stream **HEVC/H.265**; older HP7 streams H.264. `auto` detects it. On the WebRTC path, `hevc` transcodes to H.264 (browser-friendly); `hevc_copy` passes H.265 through untouched for HEVC-capable players (Safari, Frigate). On the MJPEG path the codec doesn't matter (ffmpeg decodes either to JPEG).
+Newer HP7 (HPD7) and CP7 firmware stream **HEVC/H.265**; older HP7 streams H.264. `auto` detects it. On the WebRTC path, `hevc` transcodes to H.264 (browser-friendly); `hevc_copy` passes H.265 through untouched, which costs no CPU but hands the decoding problem downstream. On the MJPEG path the codec doesn't matter (ffmpeg decodes either to JPEG).
+
+> ⚠️ **`hevc_copy` and recorded files.** Most browsers cannot play H.265 — Chrome and Firefox generally refuse it, Safari is the exception. So an NVR that *records* the passthrough stream produces MP4s that its web UI then can't play: in Frigate the History/Detections view hangs on "Loading" even though the recording is a perfectly valid file ([#48](https://github.com/Bobsilvio/ezviz_hp7/issues/48)). Live view is unaffected. If you record and want to play those recordings back in a browser, either use **`hevc`** (we transcode) or keep `hevc_copy` and transcode in go2rtc instead, which keeps the relay cheap:
+>
+> ```yaml
+> go2rtc:
+>   streams:
+>     hp7:
+>       - "ffmpeg:tcp://127.0.0.1:8554#video=h264"   # H.264 for recording/playback
+> ```
 
 ### Stream quality: `main` vs `sub` *(local source only)*
 
@@ -288,6 +297,7 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 | Live view stuck on `idle` / blank, `Immediate exit requested` or `Invalid data found` in the log | The doorbell streams HEVC, or Image Encryption is on | Set **Stream source = `local`**, **Stream mode = `auto`**, **Video codec = `auto`**, and turn **Image/Video Encryption OFF** in the EZVIZ app |
 | Grey / black picture, or `dial tcp … connection refused` from go2rtc | HEVC on the WebRTC path — browsers can't decode it | Use **Stream mode = `auto`** (picks MJPEG for HEVC automatically) or force `mjpeg` |
 | Snapshot is a blob starting with `hikencodepicture` | Image Encryption is on — the picture is encrypted | Turn Image/Video Encryption **OFF** in the EZVIZ app |
+| Frigate recordings won't play — History/Detections stuck on "Loading" | The recording is H.265 and the browser can't decode it (`hevc_copy` passes it through) | Use Video codec **`hevc`**, or transcode in go2rtc with `#video=h264` — see [Video codec](#video-codec-auto--h264--hevc--hevc_copy) |
 | Live view black, log says the doorbell is **scrambling** the video (or a Repairs notice appears) | Image/Video Encryption is on — possibly re-enabled by an app/firmware update | Turn it **OFF** in the EZVIZ app, or — if your app version doesn't show the toggle — call [`ezviz_hp7.set_video_encryption`](#turning-off-imagevideo-encryption-without-the-app) with `enable: false` |
 | `CAS get-encryption failed` / `Result=1052170` / `1052175` | The device won't hand out a LAN key | Encryption **OFF** first. If it persists, your firmware may not support the LAN path at all — see the support table above and use `cloud` |
 | All entities go `unknown` / `unavailable`, sometimes for hours | Transient EZVIZ cloud 504s, or an expired session on an old version | Update: since 0.13.11 the coordinator keeps last-known values through a ~1 min grace window and re-logins automatically. Also **remove any "reload the integration" automation** — it makes outages longer and can trip rate limits |
