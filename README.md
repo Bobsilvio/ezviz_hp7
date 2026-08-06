@@ -55,6 +55,7 @@ Remove unused devices to free at least one slot.
   - 🚪 Unlock **gate** (lock #1 by default)
 - **Cameras**
   - 📷 **Last-alarm snapshot** (fetched from EZVIZ cloud)
+  - 🔐 **Encrypted streams are decrypted** — doorbells that scramble the video (increasingly the default, and not disableable at all on some firmware) play normally once the integration has the device key
   - 🎥 **Live video** (`camera.<...>_live`) — H.264 **and HEVC**, via the **EZVIZ VTM cloud relay** (works over WAN) **or a direct LAN stream** (CPD7, bypasses the cloud, lower latency). Delivery is **auto** by default (probes the codec and picks for you), or force **WebRTC/HLS** (with audio) or **MJPEG** (codec-agnostic, robust for HEVC + multiple viewers). See the *Live video* section below for the full option matrix.
 - **Switches** — *(beta)* below means wired against the EZVIZ API and working for the author, but **not yet confirmed by a second user on different firmware**; report back either way
   - 🔔 `chime_sound` — doorbell button chime on the camera unit
@@ -84,7 +85,8 @@ Remove unused devices to free at least one slot.
 - **HA event**: `ezviz_hp7_unlock` — fired on every recognised unlock with `{category, alarm_name, alarm_time, serial}` so automations can react to RFID / face / palm / code / app unlocks without polling state.
 - **Services**
   - `ezviz_hp7.unlock_door` / `ezviz_hp7.unlock_gate`
-  - 🔓 `ezviz_hp7.set_video_encryption` — turn the device's Image/Video Encryption on or off with the device verification code. Needed because encryption blocks the LAN stream and **some app versions no longer expose the toggle** (#47)
+  - 🔓 `ezviz_hp7.set_video_encryption` — turn the device's Image/Video Encryption on or off, for firmware that still allows it
+  - 🔑 `ezviz_hp7.fetch_encryption_key` — retrieve the camera's encryption key (EZVIZ guards it behind a one-time password) and store it, so encrypted streams decrypt
 - **Login**
   - Account / password / region
   - 🔐 2FA SMS step — the config flow now prompts for the verification code EZVIZ pushes when MFA is enabled, no need to disable 2-step login
@@ -126,13 +128,14 @@ The integration logs in through the EZVIZ API, lists every paired device on the 
 
 After setup, a device card for the **EZVIZ HP7 / CP7 intercom** appears with the entities listed above (the displayed model label tracks whatever the cloud reports for that serial).
 
-Three services are exposed:
+Four services are exposed:
 
 | Service | What it does |
 |---|---|
 | `ezviz_hp7.unlock_door` | Opens the door (lock #2) |
 | `ezviz_hp7.unlock_gate` | Opens the gate (lock #1) |
 | `ezviz_hp7.set_video_encryption` | Turns the device's Image/Video Encryption on or off |
+| `ezviz_hp7.fetch_encryption_key` | Retrieves the camera's encryption key (needs a one-time password) and stores it |
 
 `serial` is optional on all three — omit it with a single configured device.
 
@@ -179,20 +182,45 @@ action:
 
 EZVIZ simply does not publish the link between an unlock event and the credential that caused it: `cardNo`, `userId`, `recExtraInfo` and `analysisResult` all come back null, and `customerInfo` is just `{"object":"Card"}`. This was confirmed by packet-capturing the official app while opening an event's detail view — **the app itself shows no more than we do** ([#32](https://github.com/Bobsilvio/ezviz_hp7/issues/32)). So with two or more cards, treat RFID as "someone with a valid card", not as identification.
 
-### Turning off Image/Video Encryption without the app
+### Encrypted streams
 
-Encryption must be **off** for the LAN stream to decode (see [Live video](#-live-video)). Normally you disable it in the EZVIZ app, but **some app versions no longer show the toggle at all** ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) — the cloud API still accepts it, so the integration exposes it directly. Run it once from **Developer Tools → Actions**:
+Many doorbells ship with **Image/Video Encryption** enabled. It is deceptive when it bites: the MPEG-PS container, the PES packets and the NAL framing all stay perfectly readable, and only the NAL *bodies* are scrambled — so the stream looks structurally valid while ffmpeg decodes nothing but garbage, and every source/mode/codec combination fails identically.
+
+**Since 0.16.x the integration decrypts these streams**, so encryption no longer has to be switched off. When it detects the condition it needs the device's encryption key, which you can supply two ways:
+
+**1. Paste the code** (works on most devices — the key is the verification code):
+
+> Configure → **Encryption key** = the 6-character code from the device label → Submit
+
+**2. Fetch it from the cloud** (for firmware where the key is *not* the verification code). EZVIZ guards it behind a one-time password, so call the action twice from **Developer Tools → Actions**:
+
+```yaml
+# first call: EZVIZ e-mails / texts you a one-time password
+action: ezviz_hp7.fetch_encryption_key
+```
+```yaml
+# second call: hand it the code you received
+action: ezviz_hp7.fetch_encryption_key
+data:
+  code: "123456"
+```
+
+On success the key is stored in the integration's options automatically and the entry reloads into a decrypting stream. Clear the manual **Encryption key** field first so a wrong value can't take precedence.
+
+#### Turning encryption off instead
+
+Still possible on most firmware, and it avoids the decryption step entirely. Normally you do it in the EZVIZ app, but **some app versions no longer show the toggle** ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) — the cloud API still accepts it:
 
 ```yaml
 action: ezviz_hp7.set_video_encryption
 data:
   enable: false
-  verification_code: "ABCDEF"   # 6 characters, printed on the device label / QR sticker
+  verification_code: "ABCDEF"   # 6 characters, printed on the device label
 ```
 
-The verification code is the one the app asks for when opening the camera view — the letters on the sticker, **not** your account password. It is required by design: this changes a security setting, and the integration never touches it on its own.
+The verification code is the one the app asks for when opening the camera view — **not** your account password. It is required by design, since this changes a security setting, and the integration never touches it on its own.
 
-Afterwards reload the integration and open the live view. To re-enable encryption later, call the same service with `enable: true`.
+> ⚠️ On **firmware V5.4.0 build 260115** this call always fails with `1011 verification code incorrect`, and it was confirmed against a factory reset, a re-pair and a brand-new account in another region ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)). That firmware appears to have removed the disable path altogether — decrypting is the way forward there.
 
 ---
 
@@ -216,7 +244,7 @@ The HP7 / CP7 don't expose RTSP or ONVIF and don't register on the Hik-Connect U
 | **`local`** | **Direct LAN** stream (CPD7 protocol — ports 9010/9020, AES-128-CBC control, ECDH + ChaCha20 media). Bypasses the cloud entirely. Reverse engineered by [albrzmr](https://github.com/albrzmr/ezviz_hp7). | HA is on the **same network** as the doorbell. Works on firmware whose VTM channel never pushes (CP5 / some HP7). Lower latency, no cloud. |
 | **`auto`** | Try `local` first, fall back to `cloud`. | Default-friendly choice when on the LAN. |
 
-> **`local` requires Image/Video Encryption to be OFF** in the EZVIZ app (device Settings). With encryption on, the camera accepts the connection but never emits plaintext bytes. The integration surfaces a clear hint if it detects this.
+> If the doorbell encrypts the video, `local` needs the encryption key — see [Encrypted streams](#encrypted-streams). Since 0.16.x the integration decrypts the stream rather than requiring you to switch encryption off.
 
 ### Stream mode: `auto` / `webrtc` / `mjpeg`
 
@@ -255,11 +283,12 @@ Based on what users have actually confirmed on hardware — not on what the prot
 |---|---|---|---|
 | HP7 (H.264) | ✅ | ✅ | WebRTC works, so you get audio |
 | HP7 Pro / HPD7 (HEVC) | ✅ | ✅ | Use `auto` or `mjpeg`; WebRTC can't show HEVC without transcoding |
-| CP7 | ✅ | ✅ | Requires Image/Video Encryption **OFF** |
+| CP7 | ✅ | ✅ | Encrypted streams are decrypted with the device key |
 | CP5 | ✅ | ❌ | The firmware never authorises the LAN key: CAS keeps returning `1052175` **even with encryption off**. Use the cloud source |
-| HP5 / HPD5 | ✅ | ✅ | Confirmed working ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)). Requires Image/Video Encryption **OFF** — with it on the stream looks structurally valid but decodes to garbage |
+| HP5 / HPD5 | ✅ | ✅ | Confirmed working ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)) |
+| HPD7 fw V5.4.0 | ✅ | ✅ | Encryption cannot be disabled on this firmware at all ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)); supply the encryption key and the stream is decrypted |
 
-**Image / Video Encryption must be OFF for the LAN path on every model.** ⚠️ A firmware or app update can **silently re-enable it**, and the failure is deceptive: the container, PES and NAL framing all stay perfectly readable while the payloads are scrambled, so it looks exactly like a decoder bug. Since **0.15.8** the integration detects this itself (via `PES_scrambling_control`) and raises a Repairs notice telling you to turn encryption off, instead of leaving you to debug it. With it on, the doorbell accepts the session but never emits plaintext video, and the CAS refuses the LAN key (`1052170` / `1052175`). Turn it off in the EZVIZ app under the device's settings (it asks for the 6-letter device code). It does **not** need to be off for the cloud source.
+**On encryption:** since **0.15.8** the integration detects a scrambled stream itself (via `PES_scrambling_control`) instead of leaving you to debug what looks like a decoder bug, and since **0.16.x** it decrypts it given the key — see [Encrypted streams](#encrypted-streams). A firmware or app update can silently re-enable encryption, so this is worth knowing even if yours is currently off. Note that encryption can also make the CAS refuse the LAN key outright (`1052170` / `1052175`), which no key can work around: that one still needs encryption switched off, or the cloud source.
 
 While a LAN stream has viewers the coordinator automatically drops to a quarter of its normal polling rate and snaps back when the last viewer disconnects. Several of the endpoints we poll are proxied by the cloud down to the doorbell itself, and answering them competes with its streaming task, so sensors updating a little more slowly during live view is deliberate.
 
@@ -329,11 +358,12 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Live view stuck on `idle` / blank, `Immediate exit requested` or `Invalid data found` in the log | The doorbell streams HEVC, or Image Encryption is on | Set **Stream source = `local`**, **Stream mode = `auto`**, **Video codec = `auto`**, and turn **Image/Video Encryption OFF** in the EZVIZ app |
+| Live view stuck on `idle` / blank, `Immediate exit requested`, `Invalid data found`, or `got_output=False` | The doorbell streams HEVC, or its video is encrypted | Set **Stream source = `local`**, **Stream mode = `auto`**, **Video codec = `auto`**. If the log mentions scrambling, see [Encrypted streams](#encrypted-streams) |
 | Grey / black picture, or `dial tcp … connection refused` from go2rtc | HEVC on the WebRTC path — browsers can't decode it | Use **Stream mode = `auto`** (picks MJPEG for HEVC automatically) or force `mjpeg` |
 | Snapshot is a blob starting with `hikencodepicture` | Image Encryption is on — the picture is encrypted | Turn Image/Video Encryption **OFF** in the EZVIZ app |
 | Frigate recordings won't play — History/Detections stuck on "Loading" | The recording is H.265 and the browser can't decode it (`hevc_copy` passes it through) | Use Video codec **`hevc`**, or transcode in go2rtc with `#video=h264` — see [Video codec](#video-codec-auto--h264--hevc--hevc_copy) |
-| Live view black, log says the doorbell is **scrambling** the video (or a Repairs notice appears) | Image/Video Encryption is on — possibly re-enabled by an app/firmware update | Turn it **OFF** in the EZVIZ app, or — if your app version doesn't show the toggle — call [`ezviz_hp7.set_video_encryption`](#turning-off-imagevideo-encryption-without-the-app) with `enable: false` |
+| Live view black, log says the doorbell is **scrambling** the video | Image/Video Encryption is on — possibly re-enabled by an app/firmware update | Give the integration the key so it can decrypt — see [Encrypted streams](#encrypted-streams). Turning encryption off in the app still works too, where the app offers it |
+| Log says `decrypting it with the camera key` but the picture is still black | The key is being used but is the wrong material for your firmware | Fetch the real key from the cloud with `ezviz_hp7.fetch_encryption_key` (needs a one-time password) — see [Encrypted streams](#encrypted-streams) |
 | `CAS get-encryption failed` / `Result=1052170` / `1052175` | The device won't hand out a LAN key | Encryption **OFF** first. If it persists, your firmware may not support the LAN path at all — see the support table above and use `cloud` |
 | All entities go `unknown` / `unavailable`, sometimes for hours | Transient EZVIZ cloud 504s, or an expired session on an old version | Update: since 0.13.11 the coordinator keeps last-known values through a ~1 min grace window and re-logins automatically. Also **remove any "reload the integration" automation** — it makes outages longer and can trip rate limits |
 | A switch flips back a few seconds after you toggle it | The cloud reports the old state briefly | Fixed in 0.13.21 (the switch holds your value during a grace window) |
