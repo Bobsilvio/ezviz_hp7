@@ -80,6 +80,9 @@ class Hp7Api:
         # Serials whose FEATURE_INFO / SWITCH maps have already been logged.
         # These blobs are multiple KB; logging them once per session is a
         # diagnostic, logging them every poll is a flood.
+        # bare_serial -> camera encryption key, used to decrypt the video
+        # payloads when Image/Video Encryption is enabled (#47).
+        self._cam_key_cache: dict[str, str] = {}
         self._feature_logged: set[str] = set()
         self._switch_logged: set[str] = set()
 
@@ -730,6 +733,37 @@ class Hp7Api:
             value = payload.get(key)
             if isinstance(value, list) and value and isinstance(value[0], dict):
                 return value[0]
+        return None
+
+    def get_camera_encryption_key(self, serial: str) -> str | None:
+        """Fetch the camera's encryption key, cached for the session.
+
+        Needed to decrypt the video when Image/Video Encryption is on. Newer
+        firmware (V5.4.0) appears to have removed the ability to switch
+        encryption off at all (#47), so decrypting is the only way to show a
+        picture on those devices.
+        """
+        bare = self._bare_serial(serial)
+        cached = self._cam_key_cache.get(bare)
+        if cached is not None:
+            return cached
+        self.ensure_client()
+        if not self._client:
+            return None
+        for candidate in (bare, serial):
+            try:
+                key = self._client.get_cam_key(candidate)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug(
+                    "EZVIZ HP7: camera key fetch failed for %s: %s", candidate, exc
+                )
+                continue
+            if key:
+                self._cam_key_cache[bare] = str(key)
+                _LOGGER.info(
+                    "EZVIZ HP7: got camera encryption key for %s", candidate
+                )
+                return str(key)
         return None
 
     def set_video_encryption(

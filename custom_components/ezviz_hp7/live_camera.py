@@ -727,6 +727,62 @@ class Hp7StreamRelay:
             buf = bytes(self._gop_buf)
         return [buf[i:i + RELAY_CHUNK] for i in range(0, len(buf), RELAY_CHUNK)]
 
+    def _maybe_decrypt(self, body: bytes) -> bytes:
+        """Decrypt scrambled video payloads when the device encrypts them.
+
+        Image/Video Encryption leaves MPEG-PS/PES and Annex B NAL framing in
+        the clear and encrypts only the NAL bodies, which is why such a
+        stream looks structurally perfect yet decodes to garbage. pyEzvizApi
+        can undo it given the camera key, so on firmware where encryption
+        can no longer be switched off at all (#47) this is the only way to
+        get a picture. Returns the input unchanged when decryption isn't
+        active or isn't possible.
+        """
+        if self._decrypt_key is None or self._decrypt_failed:
+            return body
+        try:
+            from .pylocalapi.stream import (
+                decrypt_hikvision_ps_video,
+                mpeg_ps_decryptable_prefix_length,
+            )
+
+            self._decrypt_buf.extend(body)
+            n = mpeg_ps_decryptable_prefix_length(bytes(self._decrypt_buf))
+            if n <= 0:
+                return b""
+            chunk = bytes(self._decrypt_buf[:n])
+            del self._decrypt_buf[:n]
+            return decrypt_hikvision_ps_video(chunk, self._decrypt_key)
+        except Exception as exc:  # noqa: BLE001
+            self._decrypt_failed = True
+            _LOGGER.error(
+                "Hp7StreamRelay: stream decryption failed, passing through "
+                "unchanged (serial=%s): %s", self._serial, exc,
+            )
+            return body
+
+    def _enable_decryption(self) -> None:
+        """Fetch the camera key so scrambled payloads can be decrypted."""
+        if self._decrypt_key is not None or self._decrypt_failed:
+            return
+        try:
+            key = self._api.get_camera_encryption_key(self._serial)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7StreamRelay: camera key unavailable: %s", exc)
+            return
+        if not key:
+            _LOGGER.warning(
+                "Hp7StreamRelay: the stream is encrypted but no camera key is "
+                "available, so it cannot be decrypted (serial=%s)",
+                self._serial,
+            )
+            return
+        self._decrypt_key = key
+        _LOGGER.warning(
+            "Hp7StreamRelay: stream is encrypted — decrypting it with the "
+            "camera key (serial=%s)", self._serial,
+        )
+
     def _check_scrambled(self, parser: Any) -> None:
         """Tell the user when the device is scrambling the stream (#41).
 
@@ -747,6 +803,10 @@ class Hp7StreamRelay:
             "EZVIZ app (device Settings) for the LAN stream to decode.",
             parser.scrambled_packets, self._serial,
         )
+        self._enable_decryption()
+        if self._decrypt_key is not None:
+            # Decrypting, so no need to nag the user about the app setting.
+            return
         if self._hass is not None:
             try:
                 self._hass.loop.call_soon_threadsafe(self._raise_scrambled_repair)
@@ -1034,6 +1094,7 @@ class Hp7StreamRelay:
         self._q_resync = set()
         self._warned_saturation = False
         self._warned_scrambled = False
+        self._decrypt_buf = bytearray()
         v_bytes = a_bytes = 0
         # Time-based, not byte-based: at ~400 KB/s a 256 KB threshold emitted
         # an INFO line every ~0.6 s forever — a 24/7 Frigate consumer logged
@@ -1056,6 +1117,9 @@ class Hp7StreamRelay:
                     # MP2, so we feed the extracted AAC to a second input
                     # instead. Video stays a clean raw passthrough; audio
                     # comes from the de-mislabelled PES.
+                    body = self._maybe_decrypt(body)
+                    if not body:
+                        continue
                     v_bytes += len(body)
                     self._gop_update(body)
                     self._ps_dump(body)
