@@ -501,7 +501,6 @@ class Hp7StreamRelay:
         self._decrypt_key: Optional[str] = None
         self._decrypt_buf = bytearray()
         self._decrypt_failed = False
-        self._warned_scrambled = False
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
