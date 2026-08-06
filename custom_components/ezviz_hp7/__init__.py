@@ -146,7 +146,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.async_add_executor_job(api.login)
         await hass.async_add_executor_job(api.detect_capabilities, serial)
     except Exception as exc:
-        _LOGGER.error("Failed to connect to EZVIZ HP7 API: %s", exc)
+        # Deliberately not logged at ERROR: raising ConfigEntryNotReady is
+        # how a *retryable* setup failure is reported, and Home Assistant
+        # already logs it once and then retries with backoff. Logging it
+        # ourselves as well produced an alarming ERROR on every attempt for
+        # what is usually a transient DNS or cloud hiccup, which made the
+        # integration look broken when the real fault was elsewhere (#49:
+        # HA core's own resolver was timing out).
+        _LOGGER.debug("EZVIZ HP7 setup deferred: %s", exc)
         raise ConfigEntryNotReady(f"Cannot connect to EZVIZ HP7: {exc}") from exc
 
     # Detect device model (HP7 / CP7 / ...) from the cloud so DeviceInfo
@@ -163,7 +170,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as exc:
-        _LOGGER.error("Failed to fetch initial data from coordinator: %s", exc)
+        _LOGGER.debug("EZVIZ HP7 first refresh deferred: %s", exc)
         raise ConfigEntryNotReady(f"Failed to fetch EZVIZ HP7 data: {exc}") from exc
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
