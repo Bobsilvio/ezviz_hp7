@@ -495,6 +495,13 @@ class Hp7StreamRelay:
         self._q_resync: set[int] = set()
         self._warned_saturation = False
         self._warned_scrambled = False
+        # Payload decryption (#47): key + carry-over buffer. A NAL can span
+        # several video PES packets, so only the "complete" prefix reported
+        # by mpeg_ps_decryptable_prefix_length() may be decrypted per call.
+        self._decrypt_key: Optional[str] = None
+        self._decrypt_buf = bytearray()
+        self._decrypt_failed = False
+        self._warned_scrambled = False
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -1092,6 +1099,7 @@ class Hp7StreamRelay:
         self._drops = 0
         self._q_last_drain = {}
         self._q_resync = set()
+        self._decrypt_buf = bytearray()
         self._warned_saturation = False
         self._warned_scrambled = False
         self._decrypt_buf = bytearray()
