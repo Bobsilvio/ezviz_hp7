@@ -29,6 +29,7 @@ from .const import (
     STREAM_MODE_AUTO,
     STREAM_MODES,
     CONF_DIAGNOSTIC_DUMPS,
+    CONF_ENCRYPTION_KEY,
     CONF_STREAM_QUALITY,
     STREAM_QUALITY_MAIN,
     STREAM_QUALITIES,
@@ -356,6 +357,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             if quality not in STREAM_QUALITIES:
                 quality = STREAM_QUALITY_MAIN
             dumps = bool(user_input.get(CONF_DIAGNOSTIC_DUMPS, False))
+            enc_key = str(user_input.get(CONF_ENCRYPTION_KEY) or "").strip()
             return self.async_create_entry(
                 title="",
                 data={
@@ -368,6 +370,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_STREAM_MODE: mode,
                     CONF_STREAM_QUALITY: quality,
                     CONF_DIAGNOSTIC_DUMPS: dumps,
+                    CONF_ENCRYPTION_KEY: enc_key,
                 },
             )
 
@@ -454,6 +457,13 @@ class OptionsFlow(config_entries.OptionsFlow):
         if current_quality not in STREAM_QUALITIES:
             current_quality = STREAM_QUALITY_MAIN
 
+        current_enc_key = str(
+            self.config_entry.options.get(
+                CONF_ENCRYPTION_KEY,
+                self.config_entry.data.get(CONF_ENCRYPTION_KEY, ""),
+            )
+            or ""
+        )
         current_dumps = bool(
             self.config_entry.options.get(
                 CONF_DIAGNOSTIC_DUMPS,
@@ -483,6 +493,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_STREAM_QUALITY, default=current_quality
                 ): vol.In(STREAM_QUALITIES),
+                vol.Optional(
+                    CONF_ENCRYPTION_KEY, default=current_enc_key
+                ): str,
                 vol.Optional(
                     CONF_DIAGNOSTIC_DUMPS, default=current_dumps
                 ): bool,

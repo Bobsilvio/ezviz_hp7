@@ -241,6 +241,7 @@
           "stream_source": "Fuente del stream (cloud = relay VTM EZVIZ; local = LAN directa, evita la nube y arregla 'sin directo' en firmware que no envía a la nube — requiere HA en la misma red que el videoportero; auto = prueba local y luego cloud)",
           "stream_mode": "Modo de visualización (auto = por defecto: detecta el códec y elige solo — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, con audio + baja latencia pero no muestra HEVC sin transcodificar; mjpeg = ffmpeg por visor a motion-JPEG, agnóstico al códec y robusto para HEVC/multi-visor pero sin audio)",
           "stream_quality": "Calidad del stream LAN (main = resolución completa; sub = subflujo de baja resolución del dispositivo, mucho más ligero de decodificar — úsalo si el vídeo acumula retraso en hosts poco potentes como una Raspberry Pi. Solo para la fuente 'local')",
+          "encryption_key": "Clave de cifrado (el código de verificación de 6 caracteres del dispositivo, en su etiqueta). Solo se necesita si el videoportero cifra el vídeo y la nube no entrega la clave: se usa para descifrar el stream y así ver el directo sin desactivar el cifrado.",
           "diagnostic_dumps": "Volcados de diagnóstico (escribe dos archivos .bin en /config con el inicio del stream, solo para análisis al reportar un problema de vídeo. Déjalo en OFF: no sirve en uso normal)"
         }
       }

@@ -90,6 +90,13 @@ STREAM_QUALITIES = [STREAM_QUALITY_MAIN, STREAM_QUALITY_SUB]
 # enabling debug for anything else silently started writing files.
 CONF_DIAGNOSTIC_DUMPS = "diagnostic_dumps"
 
+# Encryption key / verification code used to decrypt the video when the
+# device has Image/Video Encryption enabled. The cloud can hand this out via
+# get_cam_key, but that needs 2FA elevation and quietly fails otherwise
+# (#47), so let the user paste the 6-character code from the device label —
+# it is the same material. Empty = try the cloud, then give up.
+CONF_ENCRYPTION_KEY = "encryption_key"
+
 # Platforms to set up
 PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
 

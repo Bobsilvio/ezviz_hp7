@@ -415,6 +415,7 @@ class Hp7StreamRelay:
         stream_mode: str = "mjpeg",
         stream_quality: str = "main",
         diagnostic_dumps: bool = False,
+        encryption_key: str = "",
         hass: Any = None,
     ) -> None:
         self._hass = hass
@@ -471,6 +472,7 @@ class Hp7StreamRelay:
         # dir so misframed NAL payloads (HPD5) can be hex-inspected without
         # a packet capture.
         self._diagnostic_dumps = bool(diagnostic_dumps)
+        self._configured_key = (encryption_key or "").strip()
         self._es_dump_buf = bytearray()
         self._es_dump_done = False
         # Raw MPEG-PS dump + keyframe-marker counter (#41): the HPD5 "synced"
@@ -771,15 +773,20 @@ class Hp7StreamRelay:
         """Fetch the camera key so scrambled payloads can be decrypted."""
         if self._decrypt_key is not None or self._decrypt_failed:
             return
-        try:
-            key = self._api.get_camera_encryption_key(self._serial)
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("Hp7StreamRelay: camera key unavailable: %s", exc)
-            return
+        key = self._configured_key
+        if not key:
+            try:
+                key = self._api.get_camera_encryption_key(self._serial)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("Hp7StreamRelay: camera key unavailable: %s", exc)
+                key = None
         if not key:
             _LOGGER.warning(
-                "Hp7StreamRelay: the stream is encrypted but no camera key is "
-                "available, so it cannot be decrypted (serial=%s)",
+                "Hp7StreamRelay: the stream is encrypted but no key is "
+                "available (serial=%s). The cloud only hands the key out "
+                "after 2FA elevation, so enter the device's 6-character "
+                "verification code in Configure -> 'Encryption key' and it "
+                "will be used directly.",
                 self._serial,
             )
             return
@@ -1817,6 +1824,7 @@ async def async_setup_live_entities(
         stream_mode=stream_mode,
         stream_quality=str(data.get("stream_quality") or "main"),
         diagnostic_dumps=bool(data.get("diagnostic_dumps", False)),
+        encryption_key=str(data.get("encryption_key") or ""),
         hass=hass,
     )
     await relay.start()

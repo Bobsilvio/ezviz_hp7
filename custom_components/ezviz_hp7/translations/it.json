@@ -241,6 +241,7 @@
           "stream_source": "Sorgente stream (cloud = relay VTM EZVIZ; local = LAN diretta, bypassa il cloud e risolve 'live assente' sui firmware che non pushano al cloud — richiede HA sulla stessa rete del citofono; auto = prova local poi cloud)",
           "stream_mode": "Modalità live (auto = default: rileva il codec e sceglie da solo — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, con audio + bassa latenza ma non mostra HEVC senza transcodifica; mjpeg = ffmpeg per-viewer in motion-JPEG, codec-agnostico e robusto per HEVC/multi-viewer ma senza audio)",
           "stream_quality": "Qualità stream LAN (main = piena risoluzione; sub = flusso a bassa risoluzione del dispositivo, molto più leggero da decodificare — usalo se il video accumula ritardo su host deboli tipo Raspberry. Solo sorgente 'local')",
+          "encryption_key": "Chiave di crittografia (il codice di verifica a 6 caratteri del dispositivo, stampato sull'etichetta). Serve solo se il citofono cifra il video e il cloud non rilascia la chiave: viene usata per decifrare il flusso, così il live funziona senza dover disattivare la crittografia.",
           "diagnostic_dumps": "Dump diagnostici (scrive due file .bin in /config con l'inizio dello stream, solo per analisi quando segnali un problema video. Lascia OFF: sono inutili nell'uso normale)"
         }
       }
