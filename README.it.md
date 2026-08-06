@@ -53,6 +53,7 @@ Rimuovi i dispositivi inutilizzati per liberare almeno uno slot.
   - 🚪 Apri **cancello** (serratura #1 di default)
 - **Telecamere**
   - 📷 **Istantanea ultimo allarme** (scaricata dal cloud EZVIZ)
+  - 🔐 **I flussi cifrati vengono decifrati** — i citofoni che cifrano il video (sempre più spesso di default, e su alcuni firmware non disattivabile affatto) funzionano normalmente una volta che l'integrazione ha la chiave del dispositivo
   - 🎥 **Video live** (`camera.<...>_live`) — H.264 **e HEVC**, tramite il **relay cloud VTM EZVIZ** (funziona anche fuori casa) **oppure via LAN diretta** (CPD7, bypassa il cloud, latenza minore). La consegna è **auto** di default (rileva il codec e sceglie da sé), oppure forzabile su **WebRTC/HLS** (con audio) o **MJPEG** (indipendente dal codec, robusto per HEVC e più spettatori). Vedi la sezione *Video live*.
 - **Interruttori** — *(beta)* significa: implementato sulle API EZVIZ e funzionante per l'autore, ma **non ancora confermato da un secondo utente su firmware diverso**
   - 🔔 `chime_sound` — suoneria sul citofono esterno
@@ -82,7 +83,8 @@ Rimuovi i dispositivi inutilizzati per liberare almeno uno slot.
 - **Evento HA**: `ezviz_hp7_unlock` — emesso a ogni sblocco riconosciuto con `{category, alarm_name, alarm_time, serial}`, così le automazioni reagiscono senza fare polling sugli stati.
 - **Servizi**
   - `ezviz_hp7.unlock_door` / `ezviz_hp7.unlock_gate`
-  - 🔓 `ezviz_hp7.set_video_encryption` — attiva o disattiva la crittografia immagini/video del dispositivo usando il codice di verifica. Serve perché la crittografia blocca lo stream LAN e **alcune versioni dell'app non mostrano più l'opzione** ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47))
+  - 🔓 `ezviz_hp7.set_video_encryption` — attiva o disattiva la crittografia, sui firmware che lo permettono ancora
+  - 🔑 `ezviz_hp7.fetch_encryption_key` — recupera la chiave di crittografia della telecamera (EZVIZ la protegge dietro una one-time password) e la salva, così i flussi cifrati vengono decifrati
 - **Login**
   - Account / password / regione
   - 🔐 2FA via SMS — il flusso di configurazione chiede il codice che EZVIZ invia quando l'MFA è attivo, senza doverlo disattivare
@@ -117,13 +119,14 @@ L'integrazione accede alle API EZVIZ, elenca i dispositivi associati all'account
 
 ## 🛠 Uso
 
-Sono esposti tre servizi:
+Sono esposti quattro servizi:
 
 | Servizio | Cosa fa |
 |---|---|
 | `ezviz_hp7.unlock_door` | Apre la porta (serratura #2) |
 | `ezviz_hp7.unlock_gate` | Apre il cancello (serratura #1) |
 | `ezviz_hp7.set_video_encryption` | Attiva o disattiva la crittografia immagini/video |
+| `ezviz_hp7.fetch_encryption_key` | Recupera la chiave di crittografia della telecamera (serve una one-time password) e la salva |
 
 `serial` è opzionale su tutti e tre: con un solo dispositivo configurato puoi ometterlo.
 
@@ -156,20 +159,45 @@ action:
 
 EZVIZ semplicemente non pubblica il legame tra evento di sblocco e credenziale usata: `cardNo`, `userId`, `recExtraInfo` e `analysisResult` tornano tutti nulli, e `customerInfo` è solo `{"object":"Card"}`. È stato verificato analizzando il traffico dell'app ufficiale mentre si apre il dettaglio di un evento — **l'app stessa non mostra più di quanto mostriamo noi** ([#32](https://github.com/Bobsilvio/ezviz_hp7/issues/32)). Quindi con due o più card considera l'RFID come "qualcuno con un badge valido", non come identificazione.
 
-### Disattivare la crittografia senza l'app
+### Flussi cifrati
 
-La crittografia deve essere **spenta** perché lo stream LAN si decodifichi (vedi [Video live](#-video-live)). Normalmente si disattiva dall'app EZVIZ, ma **alcune versioni dell'app non mostrano più l'opzione** ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) — l'API cloud però la accetta ancora, quindi l'integrazione la espone direttamente. Esegui una volta da **Strumenti per sviluppatori → Azioni**:
+Molti citofoni escono di fabbrica con la **crittografia immagini/video attiva**. Quando morde è ingannevole: il contenitore MPEG-PS, i pacchetti PES e il framing NAL restano perfettamente leggibili, e viene cifrato solo il **corpo** dei NAL — quindi il flusso sembra strutturalmente valido mentre ffmpeg decodifica solo spazzatura, e ogni combinazione di sorgente/modalità/codec fallisce identica.
+
+**Dalla 0.16.x l'integrazione decifra questi flussi**, quindi la crittografia non deve più essere disattivata. Quando rileva la condizione le serve la chiave del dispositivo, che puoi fornire in due modi:
+
+**1. Incolla il codice** (funziona sulla maggior parte dei dispositivi — la chiave è il codice di verifica):
+
+> Configura → **Chiave di crittografia** = il codice a 6 caratteri sull'etichetta → Invia
+
+**2. Recuperala dal cloud** (per i firmware in cui la chiave *non* è il codice di verifica). EZVIZ la protegge dietro una one-time password, quindi si chiama l'azione due volte da **Strumenti per sviluppatori → Azioni**:
+
+```yaml
+# prima chiamata: EZVIZ ti manda una one-time password via email / SMS
+action: ezviz_hp7.fetch_encryption_key
+```
+```yaml
+# seconda chiamata: passale il codice ricevuto
+action: ezviz_hp7.fetch_encryption_key
+data:
+  code: "123456"
+```
+
+Al successo la chiave viene salvata automaticamente nelle opzioni dell'integrazione e l'entry si ricarica già in modalità decifrata. Svuota prima il campo **Chiave di crittografia** manuale, così un valore sbagliato non ha la precedenza.
+
+#### In alternativa: disattivare la crittografia
+
+Sulla maggior parte dei firmware si può ancora fare, ed evita del tutto il passaggio della decifratura. Normalmente si fa dall'app EZVIZ, ma **alcune versioni dell'app non mostrano più l'opzione** ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) — l'API cloud però la accetta ancora:
 
 ```yaml
 action: ezviz_hp7.set_video_encryption
 data:
   enable: false
-  verification_code: "ABCDEF"   # 6 caratteri, stampati sull'etichetta / adesivo QR del dispositivo
+  verification_code: "ABCDEF"   # 6 caratteri, stampati sull'etichetta
 ```
 
-Il codice di verifica è quello che l'app chiede per aprire la vista telecamera — le lettere sull'adesivo, **non** la password dell'account. È richiesto per scelta: cambia un'impostazione di sicurezza, e l'integrazione non la tocca mai da sola.
+Il codice di verifica è quello che l'app chiede per aprire la vista telecamera — **non** la password dell'account. È richiesto per scelta: cambia un'impostazione di sicurezza, e l'integrazione non la tocca mai da sola.
 
-Dopo, ricarica l'integrazione e apri il live. Per riattivarla, stesso servizio con `enable: true`.
+> ⚠️ Sul **firmware V5.4.0 build 260115** questa chiamata fallisce sempre con `1011 codice di verifica errato`, verificato dopo reset di fabbrica, ri-pairing e perfino con un account nuovo in un'altra regione ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)). Quel firmware sembra aver rimosso del tutto la possibilità di disattivarla: lì la strada è decifrare.
 
 ---
 
@@ -193,7 +221,7 @@ HP7 e CP7 non espongono RTSP né ONVIF e non si registrano sul cloud P2P UDP di 
 | **`local`** | **LAN diretta** (protocollo CPD7 — porte 9010/9020, controllo AES-128-CBC, media ECDH + ChaCha20). Bypassa completamente il cloud. Reverse engineering di [albrzmr](https://github.com/albrzmr/ezviz_hp7). | HA è sulla **stessa rete** del citofono. Funziona anche sui firmware il cui canale VTM non pubblica mai. Latenza minore, niente cloud. |
 | **`auto`** | Prova `local`, poi ripiega su `cloud`. | Scelta comoda quando sei in LAN. |
 
-> **`local` richiede che la crittografia immagini/video sia SPENTA** nell'app EZVIZ. Con la crittografia attiva la telecamera accetta la connessione ma non emette mai byte in chiaro.
+> Se il citofono cifra il video, `local` ha bisogno della chiave — vedi [Flussi cifrati](#flussi-cifrati). Dalla 0.16.x l'integrazione decifra il flusso invece di richiedere che tu disattivi la crittografia.
 
 ### Modalità live: `auto` / `webrtc` / `mjpeg`
 
@@ -232,11 +260,12 @@ Basato su ciò che gli utenti hanno realmente confermato su hardware, non su ci�
 |---|---|---|---|
 | HP7 (H.264) | ✅ | ✅ | WebRTC funziona, quindi hai anche l'audio |
 | HP7 Pro / HPD7 (HEVC) | ✅ | ✅ | Usa `auto` o `mjpeg`; WebRTC non mostra l'HEVC senza transcodifica |
-| CP7 | ✅ | ✅ | Richiede crittografia immagini/video **SPENTA** |
+| CP7 | ✅ | ✅ | I flussi cifrati vengono decifrati con la chiave del dispositivo |
 | CP5 | ✅ | ❌ | Il firmware non autorizza mai la chiave LAN: il CAS continua a rispondere `1052175` **anche con la crittografia spenta**. Usa la sorgente cloud |
-| HP5 / HPD5 | ✅ | ✅ | Confermato funzionante ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)). Richiede crittografia **SPENTA** — con quella attiva il flusso sembra strutturalmente valido ma si decodifica in spazzatura |
+| HP5 / HPD5 | ✅ | ✅ | Confermato funzionante ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)) |
+| HPD7 fw V5.4.0 | ✅ | ✅ | Su questo firmware la crittografia non è disattivabile ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)); fornisci la chiave e il flusso viene decifrato |
 
-**La crittografia immagini/video deve essere SPENTA per il percorso LAN su ogni modello.** ⚠️ Un aggiornamento di firmware o dell'app può **riattivarla da sola**, e il guasto è ingannevole: contenitore, PES e framing NAL restano perfettamente leggibili mentre i dati sono cifrati, quindi sembra identico a un bug del decoder. Dalla **0.15.8** l'integrazione lo rileva da sola (via `PES_scrambling_control`) e crea un avviso in Riparazioni che ti dice di spegnerla. Non serve spegnerla per la sorgente cloud.
+**Sulla crittografia:** dalla **0.15.8** l'integrazione rileva da sola un flusso cifrato (via `PES_scrambling_control`) invece di lasciarti indagare su quello che sembra un bug del decoder, e dalla **0.16.x** lo decifra se ha la chiave — vedi [Flussi cifrati](#flussi-cifrati). Un aggiornamento di firmware o dell'app può riattivare la crittografia da sola, quindi vale la pena saperlo anche se ora la tua è spenta. Nota che la crittografia può anche far rifiutare al CAS la chiave LAN (`1052170` / `1052175`), e a quello nessuna chiave può rimediare: lì serve davvero spegnerla, oppure usare la sorgente cloud.
 
 Mentre lo stream LAN ha spettatori, il coordinator scende automaticamente a un quarto della frequenza di polling e risale quando l'ultimo spettatore si disconnette. Diversi endpoint che interroghiamo vengono inoltrati dal cloud fino al citofono stesso, e rispondere compete con il compito di streaming: sensori un po' più lenti durante il live sono quindi voluti.
 
@@ -297,11 +326,12 @@ La password va **codificata in URL** nel path. Apri `http://<ip_ha>:11984` per l
 
 | Sintomo | Causa | Soluzione |
 |---|---|---|
-| Live fermo su `idle` / nero, `Immediate exit requested` o `Invalid data found` nei log | Il citofono trasmette in HEVC, oppure la crittografia è attiva | **Sorgente = `local`**, **Modalità = `auto`**, **Codec = `auto`**, e **crittografia SPENTA** nell'app |
+| Live fermo su `idle` / nero, `Immediate exit requested`, `Invalid data found` o `got_output=False` | Il citofono trasmette in HEVC, oppure il video è cifrato | **Sorgente = `local`**, **Modalità = `auto`**, **Codec = `auto`**. Se il log parla di cifratura, vedi [Flussi cifrati](#flussi-cifrati) |
 | Immagine grigia/nera, o `dial tcp … connection refused` da go2rtc | HEVC sul percorso WebRTC — i browser non lo decodificano | **Modalità = `auto`** (sceglie MJPEG per l'HEVC) o forza `mjpeg` |
 | L'istantanea è un blob che inizia con `hikencodepicture` | Crittografia attiva — l'immagine è cifrata | Spegni la crittografia nell'app EZVIZ |
 | Le registrazioni Frigate non partono — Cronologia bloccata su "Loading" | La registrazione è H.265 e il browser non la decodifica (`hevc_copy` lo lascia passare) | Codec **`hevc`**, oppure transcodifica in go2rtc con `#video=h264` |
-| Live nero, il log dice che il citofono sta **cifrando** il video (o compare un avviso in Riparazioni) | Crittografia attiva — magari riattivata da un aggiornamento | Spegnila nell'app, oppure — se la tua versione dell'app non mostra l'opzione — chiama [`ezviz_hp7.set_video_encryption`](#disattivare-la-crittografia-senza-lapp) con `enable: false` |
+| Live nero, il log dice che il citofono sta **cifrando** il video | Crittografia attiva — magari riattivata da un aggiornamento | Dai la chiave all'integrazione così la decifra — vedi [Flussi cifrati](#flussi-cifrati). Dove l'app lo consente, spegnerla funziona ancora |
+| Il log dice `decrypting it with the camera key` ma l'immagine resta nera | La chiave viene usata ma non è il materiale giusto per il tuo firmware | Recupera la chiave vera dal cloud con `ezviz_hp7.fetch_encryption_key` (serve una one-time password) — vedi [Flussi cifrati](#flussi-cifrati) |
 | `CAS get-encryption failed` / `Result=1052170` / `1052175` | Il dispositivo non rilascia la chiave LAN | Prima la crittografia **SPENTA**. Se persiste, il tuo firmware potrebbe non supportare affatto il percorso LAN — vedi la tabella dei modelli e usa `cloud` |
 | Tutte le entità vanno in `unknown` / `unavailable`, a volte per ore | 504 temporanei del cloud EZVIZ, o sessione scaduta su una versione vecchia | Aggiorna: dalla 0.13.11 il coordinator mantiene gli ultimi valori noti per circa un minuto e rifà il login da solo. Inoltre **togli eventuali automazioni che ricaricano l'integrazione** — allungano il disservizio e possono far scattare i limiti di frequenza |
 | Un interruttore torna indietro pochi secondi dopo averlo premuto | Il cloud riporta ancora il vecchio stato | Risolto nella 0.13.21 |
