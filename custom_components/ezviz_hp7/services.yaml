@@ -24,3 +24,9 @@ set_video_encryption:
       required: true
       selector:
         text:
+fetch_encryption_key:
+  fields:
+    code:
+      required: false
+      selector:
+        text:

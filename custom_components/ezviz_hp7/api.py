@@ -735,6 +735,37 @@ class Hp7Api:
                 return value[0]
         return None
 
+    def fetch_camera_key_with_code(self, serial: str, code: str) -> str | None:
+        """Fetch the camera encryption key using a 2FA/OTP code (#47).
+
+        EZVIZ guards the key behind rights elevation: calling get_cam_key
+        without a code makes the cloud e-mail/SMS a one-time password, and
+        the second call must carry it. Devices whose key is *not* simply the
+        verification code (so pasting the label code doesn't decrypt) need
+        this path.
+        """
+        self.ensure_client()
+        if not self._client:
+            return None
+        bare = self._bare_serial(serial)
+        last: Exception | None = None
+        for candidate in (bare, serial):
+            try:
+                key = self._client.get_cam_key(candidate, smscode=code or None)
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                _LOGGER.debug(
+                    "EZVIZ HP7: keyed fetch failed for %s: %s", candidate, exc
+                )
+                continue
+            if key:
+                self._cam_key_cache[bare] = str(key)
+                _LOGGER.info("EZVIZ HP7: camera key obtained for %s", candidate)
+                return str(key)
+        if last is not None:
+            raise last
+        return None
+
     def get_camera_encryption_key(self, serial: str) -> str | None:
         """Fetch the camera's encryption key, cached for the session.
 

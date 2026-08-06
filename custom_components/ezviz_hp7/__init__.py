@@ -260,6 +260,50 @@ def _async_register_services(hass: HomeAssistant) -> None:
             str(call.data.get("verification_code", "")),
         )
 
+    async def _handle_fetch_key(call) -> None:
+        """Fetch the camera encryption key and store it in the entry options.
+
+        Call once with no code to make EZVIZ send the one-time password,
+        then again with it (#47).
+        """
+        code = str(call.data.get("code", "")).strip()
+        for entry_id, data in hass.data.get(DOMAIN, {}).items():
+            api = data.get("api")
+            serial = data.get("serial")
+            if api is None or not serial:
+                continue
+            try:
+                key = await hass.async_add_executor_job(
+                    api.fetch_camera_key_with_code, serial, code
+                )
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.error(
+                    "EZVIZ HP7: key fetch failed for %s: %s. If EZVIZ just "
+                    "sent you a one-time password, call this action again "
+                    "with code: \"<that code>\".", serial, exc,
+                )
+                continue
+            if not key:
+                _LOGGER.warning(
+                    "EZVIZ HP7: no key returned for %s — check your mail/SMS "
+                    "for a one-time password and call this action again with "
+                    "it in the 'code' field.", serial,
+                )
+                continue
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if entry is not None:
+                hass.config_entries.async_update_entry(
+                    entry,
+                    options={**entry.options, CONF_ENCRYPTION_KEY: key},
+                )
+                _LOGGER.warning(
+                    "EZVIZ HP7: stored the camera encryption key for %s — "
+                    "the entry will reload and decrypt the stream.", serial,
+                )
+
+    hass.services.async_register(
+        DOMAIN, "fetch_encryption_key", _handle_fetch_key
+    )
     hass.services.async_register(DOMAIN, "unlock_gate", _handle_unlock_gate)
     hass.services.async_register(DOMAIN, "unlock_door", _handle_unlock_door)
     hass.services.async_register(
