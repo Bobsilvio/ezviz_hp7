@@ -192,12 +192,12 @@ Sulla maggior parte dei firmware si può ancora fare, ed evita del tutto il pass
 action: ezviz_hp7.set_video_encryption
 data:
   enable: false
-  verification_code: "ABCDEF"   # 6 caratteri, stampati sull'etichetta
+  verification_code: "ABCDEF"   # etichetta (6 caratteri) o codice ricevuto via email
 ```
 
 Il codice di verifica è quello che l'app chiede per aprire la vista telecamera — **non** la password dell'account. È richiesto per scelta: cambia un'impostazione di sicurezza, e l'integrazione non la tocca mai da sola.
 
-> ⚠️ Sul **firmware V5.4.0 build 260115** questa chiamata fallisce sempre con `1011 codice di verifica errato`, verificato dopo reset di fabbrica, ri-pairing e perfino con un account nuovo in un'altra regione ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)). Quel firmware sembra aver rimosso del tutto la possibilità di disattivarla: lì la strada è decifrare.
+> ⚠️ **Se fallisce con `1011 codice di verifica errato`, il codice dell'etichetta non è quello che EZVIZ vuole qui.** Sui firmware che non mostrano più l'interruttore della crittografia nell'app — visto su **V5.3.6 build 250825** e **V5.4.0 build 260115** — il codice dell'etichetta viene rifiutato su ogni variante di seriale e di campo che l'integrazione prova. Quello che invece *è* stato accettato su V5.4.0 è il breve **codice numerico che EZVIZ manda via email all'account**: messo in `verification_code` la chiamata è passata subito e il live è partito ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)). Quindi se hai ricevuto quell'email, usa quel codice al posto di quello dell'etichetta. Cosa faccia partire l'email è ancora da capire con precisione — segnalazioni benvenute sulla [#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47).
 
 ---
 
@@ -263,7 +263,7 @@ Basato su ciò che gli utenti hanno realmente confermato su hardware, non su ci�
 | CP7 | ✅ | ✅ | I flussi cifrati vengono decifrati con la chiave del dispositivo |
 | CP5 | ✅ | ❌ | Il firmware non autorizza mai la chiave LAN: il CAS continua a rispondere `1052175` **anche con la crittografia spenta**. Usa la sorgente cloud |
 | HP5 / HPD5 | ✅ | ✅ | Confermato funzionante ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)) |
-| HPD7 fw V5.4.0 | ✅ | ✅ | Su questo firmware la crittografia non è disattivabile ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)); fornisci la chiave e il flusso viene decifrato |
+| HP7 / HPD7 fw V5.3.6+ | ✅ | ✅ | L'app non mostra più l'interruttore della crittografia, che è attiva di default. Fornisci la chiave e il flusso viene decifrato; disattivarla funziona ancora, ma con il codice che EZVIZ manda via email, non con quello dell'etichetta ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) |
 
 **Sulla crittografia:** dalla **0.15.8** l'integrazione rileva da sola un flusso cifrato (via `PES_scrambling_control`) invece di lasciarti indagare su quello che sembra un bug del decoder, e dalla **0.16.x** lo decifra se ha la chiave — vedi [Flussi cifrati](#flussi-cifrati). Un aggiornamento di firmware o dell'app può riattivare la crittografia da sola, quindi vale la pena saperlo anche se ora la tua è spenta. Nota che la crittografia può anche far rifiutare al CAS la chiave LAN (`1052170` / `1052175`), e a quello nessuna chiave può rimediare: lì serve davvero spegnerla, oppure usare la sorgente cloud.
 

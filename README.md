@@ -215,12 +215,12 @@ Still possible on most firmware, and it avoids the decryption step entirely. Nor
 action: ezviz_hp7.set_video_encryption
 data:
   enable: false
-  verification_code: "ABCDEF"   # 6 characters, printed on the device label
+  verification_code: "ABCDEF"   # label code (6 characters), or the code EZVIZ e-mailed you
 ```
 
 The verification code is the one the app asks for when opening the camera view — **not** your account password. It is required by design, since this changes a security setting, and the integration never touches it on its own.
 
-> ⚠️ On **firmware V5.4.0 build 260115** this call always fails with `1011 verification code incorrect`, and it was confirmed against a factory reset, a re-pair and a brand-new account in another region ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)). That firmware appears to have removed the disable path altogether — decrypting is the way forward there.
+> ⚠️ **If this fails with `1011 verification code incorrect`, the label code is not what EZVIZ wants here.** On firmware that no longer shows the encryption toggle in the app — seen on **V5.3.6 build 250825** and **V5.4.0 build 260115** — the label code is rejected on every serial and field variant the integration tries. What *was* accepted on V5.4.0 is the short **numeric code EZVIZ e-mails to the account**: with that in `verification_code` the call succeeded immediately and the live view started ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)). So if you have such an e-mail, use that code here instead of the one on the label. Exactly what triggers the e-mail is still being pinned down — reports welcome on [#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47).
 
 ---
 
@@ -286,7 +286,7 @@ Based on what users have actually confirmed on hardware — not on what the prot
 | CP7 | ✅ | ✅ | Encrypted streams are decrypted with the device key |
 | CP5 | ✅ | ❌ | The firmware never authorises the LAN key: CAS keeps returning `1052175` **even with encryption off**. Use the cloud source |
 | HP5 / HPD5 | ✅ | ✅ | Confirmed working ([#41](https://github.com/Bobsilvio/ezviz_hp7/issues/41)) |
-| HPD7 fw V5.4.0 | ✅ | ✅ | Encryption cannot be disabled on this firmware at all ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)); supply the encryption key and the stream is decrypted |
+| HP7 / HPD7 fw V5.3.6+ | ✅ | ✅ | The app no longer shows the encryption toggle, and encryption is on by default. Supply the key and the stream is decrypted; disabling it also still works, but with the code EZVIZ e-mails rather than the label code ([#47](https://github.com/Bobsilvio/ezviz_hp7/issues/47)) |
 
 **On encryption:** since **0.15.8** the integration detects a scrambled stream itself (via `PES_scrambling_control`) instead of leaving you to debug what looks like a decoder bug, and since **0.16.x** it decrypts it given the key — see [Encrypted streams](#encrypted-streams). A firmware or app update can silently re-enable encryption, so this is worth knowing even if yours is currently off. Note that encryption can also make the CAS refuse the LAN key outright (`1052170` / `1052175`), which no key can work around: that one still needs encryption switched off, or the cloud source.
 

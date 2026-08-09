@@ -769,10 +769,10 @@ class Hp7Api:
     def get_camera_encryption_key(self, serial: str) -> str | None:
         """Fetch the camera's encryption key, cached for the session.
 
-        Needed to decrypt the video when Image/Video Encryption is on. Newer
-        firmware (V5.4.0) appears to have removed the ability to switch
-        encryption off at all (#47), so decrypting is the only way to show a
-        picture on those devices.
+        Needed to decrypt the video when Image/Video Encryption is on.
+        Firmware from V5.3.6 on ships with encryption enabled and no toggle in
+        the app (#47/#50/#51), so decrypting is the path that works without
+        asking the user to change a device setting.
         """
         bare = self._bare_serial(serial)
         cached = self._cam_key_cache.get(bare)
@@ -806,9 +806,11 @@ class Hp7Api:
         device keeps emitting a structurally valid container whose payloads
         are scrambled. Some app versions no longer expose the toggle at all
         (#47), and a firmware update can silently re-enable it (#41), so
-        offer it here. Requires the 6-character verification code printed on
-        the device label — this changes a security setting, so it is never
-        done automatically.
+        offer it here. Needs the device's verification code — normally the
+        6 characters printed on the label, but on firmware that hides the
+        toggle EZVIZ rejects that and accepts only the short numeric code it
+        e-mails to the account (#47). This changes a security setting, so it
+        is never done automatically.
         """
         self.ensure_client()
         if not self._client:
@@ -857,10 +859,11 @@ class Hp7Api:
                 )
         _LOGGER.error(
             "EZVIZ HP7: could not change video encryption for %s. If this is "
-            "'1011 / verification code incorrect', check the 6-character code "
-            "on the device label — note that it is NOT your account password, "
-            "and if the encryption password was ever changed in the app it is "
-            "that password EZVIZ wants here.",
+            "'1011 / verification code incorrect', the label code is not what "
+            "EZVIZ wants: on firmware that hides the encryption toggle it "
+            "accepts only the short numeric code it e-mails to the account "
+            "(#47). It is never your account password, and if the encryption "
+            "password was changed in the app it is that password EZVIZ wants.",
             serial,
         )
         if last_exc is not None:
