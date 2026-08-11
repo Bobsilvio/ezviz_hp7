@@ -255,6 +255,27 @@
     "stream_encrypted": {
       "title": "L'appareil chiffre le flux vidéo",
       "description": "Le portier {serial} chiffre le flux vidéo (Image/Video Encryption activé). Le conteneur reste lisible mais les données sont brouillées, donc ffmpeg ne peut pas décoder et le direct reste noir.\n\nOuvrez l'app EZVIZ → l'appareil → Réglages → **Chiffrement image/vidéo** et désactivez-le (il demande le code à 6 lettres de l'appareil). Note : une mise à jour du firmware ou de l'app peut le réactiver toute seule."
+    },
+    "encryption_otp": {
+      "title": "Code de chiffrement requis pour {serial}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Saisissez le code qu'EZVIZ vous a envoyé par e-mail",
+            "description": "Le portier {serial} chiffre sa vidéo, et EZVIZ vient d'envoyer un code de sécurité à 4 chiffres (objet \"[Device Encryption] Security Code\") à l'adresse de votre compte. Ce code déverrouille le flux et expire au bout d'environ 30 minutes.\n\nSaisissez-le ci-dessous. N'utilisez **pas** le code à 6 caractères imprimé sur l'étiquette de l'appareil : ce micrologiciel le refuse. Envoyer le champ vide demande un nouveau code à EZVIZ.",
+            "data": {
+              "code": "Code de sécurité reçu par e-mail"
+            }
+          }
+        },
+        "error": {
+          "invalid_code": "EZVIZ n'a pas accepté ce code. Il a probablement expiré : envoyez le champ vide pour en recevoir un nouveau.",
+          "resent": "Un nouveau code a été envoyé. Consultez votre messagerie et saisissez-le ici."
+        },
+        "abort": {
+          "no_device": "Ce portier n'est plus configuré dans Home Assistant."
+        }
+      }
     }
   }
 }

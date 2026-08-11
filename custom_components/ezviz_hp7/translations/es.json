@@ -255,6 +255,27 @@
     "stream_encrypted": {
       "title": "El dispositivo cifra el stream de vídeo",
       "description": "El videoportero {serial} está cifrando el stream (Image/Video Encryption activado). El contenedor sigue siendo legible pero los datos están cifrados, así que ffmpeg no puede decodificar y el directo queda en negro.\n\nAbre la app EZVIZ → el dispositivo → Ajustes → **Cifrado de imagen/vídeo** y desactívalo (pide el código de 6 letras del dispositivo). Nota: una actualización de firmware o de la app puede reactivarlo solo."
+    },
+    "encryption_otp": {
+      "title": "Se necesita el código de cifrado para {serial}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Introduce el código que EZVIZ te ha enviado por correo",
+            "description": "El videoportero {serial} cifra el vídeo, y EZVIZ acaba de enviar un código de seguridad de 4 dígitos (asunto \"[Device Encryption] Security Code\") a la dirección de tu cuenta. Ese código desbloquea la transmisión y caduca al cabo de unos 30 minutos.\n\nIntrodúcelo abajo. **No** uses el código de 6 caracteres impreso en la etiqueta del dispositivo: este firmware lo rechaza. Si envías el campo vacío, se pedirá un código nuevo a EZVIZ.",
+            "data": {
+              "code": "Código de seguridad recibido por correo"
+            }
+          }
+        },
+        "error": {
+          "invalid_code": "EZVIZ no ha aceptado ese código. Probablemente haya caducado: envía el campo vacío para que te manden uno nuevo.",
+          "resent": "Se ha enviado un código nuevo. Revisa tu correo e introdúcelo aquí."
+        },
+        "abort": {
+          "no_device": "Ese videoportero ya no está configurado en Home Assistant."
+        }
+      }
     }
   }
 }

@@ -10,6 +10,7 @@ import requests
 from requests.exceptions import RequestException
 
 from .pylocalapi.client import EzvizClient
+from .pylocalapi.exceptions import EzvizAuthVerificationCode
 from .pylocalapi.camera import EzvizCamera
 from .pylocalapi.cas import EzvizCAS
 
@@ -83,6 +84,12 @@ class Hp7Api:
         # bare_serial -> camera encryption key, used to decrypt the video
         # payloads when Image/Video Encryption is enabled (#47).
         self._cam_key_cache: dict[str, str] = {}
+        # Bare serials for which the cloud answered 20002 (rights elevation
+        # required) to a key request. EZVIZ e-mails a 4-digit code when that
+        # happens (subject "[Device Encryption] Security Code", valid 30
+        # minutes), so this is what tells the rest of the integration that a
+        # code is in the user's inbox right now (#47).
+        self.key_needs_otp: set[str] = set()
         self._feature_logged: set[str] = set()
         self._switch_logged: set[str] = set()
 
@@ -759,6 +766,7 @@ class Hp7Api:
                 )
                 continue
             if key:
+                self.key_needs_otp.discard(bare)
                 self._cam_key_cache[bare] = str(key)
                 _LOGGER.info("EZVIZ HP7: camera key obtained for %s", candidate)
                 return str(key)
@@ -781,20 +789,47 @@ class Hp7Api:
         self.ensure_client()
         if not self._client:
             return None
+        needs_otp = False
         for candidate in (bare, serial):
             try:
                 key = self._client.get_cam_key(candidate)
+            except EzvizAuthVerificationCode:
+                # 20002: the cloud will not hand the key to an un-elevated
+                # session, and sending this request is itself what makes
+                # EZVIZ e-mail the code. Confirmed on V5.4.0 build 260115
+                # (#47): the mail arrives when the live view is opened, not
+                # when the integration is added, because this is the call
+                # that runs then. Say so loudly — a code with a 30 minute
+                # life is useless if the reason it arrived sits at debug.
+                needs_otp = True
+                _LOGGER.debug(
+                    "EZVIZ HP7: key request needs elevation for %s", candidate
+                )
+                continue
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug(
                     "EZVIZ HP7: camera key fetch failed for %s: %s", candidate, exc
                 )
                 continue
             if key:
+                self.key_needs_otp.discard(bare)
                 self._cam_key_cache[bare] = str(key)
                 _LOGGER.info(
                     "EZVIZ HP7: got camera encryption key for %s", candidate
                 )
                 return str(key)
+        if needs_otp:
+            self.key_needs_otp.add(bare)
+            _LOGGER.warning(
+                "EZVIZ HP7: EZVIZ has just e-mailed a 4-digit security code "
+                "for %s (subject '[Device Encryption] Security Code') — it "
+                "unlocks this device's encrypted video and expires in about "
+                "30 minutes. Enter it in Settings -> Repairs, or call the "
+                "action ezviz_hp7.fetch_encryption_key with code: "
+                "\"<the code>\". Do not use the 6-character code from the "
+                "device label here; on this firmware EZVIZ rejects it.",
+                bare,
+            )
         return None
 
     def set_video_encryption(

@@ -1,13 +1,21 @@
 {
   "domain": "ezviz_hp7",
   "name": "EZVIZ HP7 / CP7",
-  "codeowners": ["@Bobsilvio"],
+  "codeowners": [
+    "@Bobsilvio"
+  ],
   "config_flow": true,
-  "dependencies": ["ffmpeg", "stream"],
+  "dependencies": [
+    "ffmpeg",
+    "stream",
+    "repairs"
+  ],
   "documentation": "https://github.com/Bobsilvio/ezviz_hp7/",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Bobsilvio/ezviz_hp7/issues",
-  "loggers": ["ezviz"],
+  "loggers": [
+    "ezviz"
+  ],
   "requirements": [
     "pycryptodome",
     "pandas",
@@ -15,5 +23,5 @@
     "paho-mqtt",
     "xmltodict"
   ],
-  "version": "0.16.3"
+  "version": "0.17.0"
 }

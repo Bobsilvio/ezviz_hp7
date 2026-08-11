@@ -255,6 +255,27 @@
     "stream_encrypted": {
       "title": "Urządzenie szyfruje strumień wideo",
       "description": "Wideodomofon {serial} szyfruje strumień wideo (włączone Image/Video Encryption). Kontener pozostaje czytelny, ale dane są zaszyfrowane, więc ffmpeg nie może dekodować i podgląd pozostaje czarny.\n\nOtwórz aplikację EZVIZ → urządzenie → Ustawienia → **Szyfrowanie obrazu/wideo** i wyłącz je (poprosi o 6-literowy kod urządzenia). Uwaga: aktualizacja firmware'u lub aplikacji może je samoczynnie włączyć ponownie."
+    },
+    "encryption_otp": {
+      "title": "Wymagany kod szyfrowania dla {serial}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Wprowadź kod, który EZVIZ wysłał e-mailem",
+            "description": "Wideodomofon {serial} szyfruje obraz, a EZVIZ właśnie wysłał 4-cyfrowy kod bezpieczeństwa (temat \"[Device Encryption] Security Code\") na adres przypisany do konta. Ten kod odblokowuje strumień i wygasa po około 30 minutach.\n\nWprowadź go poniżej. **Nie** używaj 6-znakowego kodu z etykiety urządzenia — to oprogramowanie go odrzuca. Wysłanie pustego pola powoduje poproszenie EZVIZ o nowy kod.",
+            "data": {
+              "code": "Kod bezpieczeństwa z wiadomości e-mail"
+            }
+          }
+        },
+        "error": {
+          "invalid_code": "EZVIZ nie zaakceptował tego kodu. Prawdopodobnie wygasł — wyślij puste pole, aby otrzymać nowy.",
+          "resent": "Nowy kod został wysłany. Sprawdź pocztę i wpisz go tutaj."
+        },
+        "abort": {
+          "no_device": "Ten wideodomofon nie jest już skonfigurowany w Home Assistant."
+        }
+      }
     }
   }
 }

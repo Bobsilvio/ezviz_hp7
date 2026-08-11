@@ -781,6 +781,27 @@ class Hp7StreamRelay:
                 _LOGGER.debug("Hp7StreamRelay: camera key unavailable: %s", exc)
                 key = None
         if not key:
+            if self._serial_needs_otp():
+                # The failed request above is what makes EZVIZ send the code,
+                # so it is already in the user's inbox — and it dies in 30
+                # minutes. Put a form in front of them rather than a log line
+                # nobody reads (#47).
+                _LOGGER.warning(
+                    "Hp7StreamRelay: the stream is encrypted and EZVIZ has "
+                    "just e-mailed the 4-digit code that unlocks it "
+                    "(serial=%s). Enter it in Settings -> Repairs within 30 "
+                    "minutes, or call ezviz_hp7.fetch_encryption_key with "
+                    "it. The 6-character label code will NOT work here.",
+                    self._serial,
+                )
+                if self._hass is not None:
+                    try:
+                        self._hass.loop.call_soon_threadsafe(
+                            self._raise_otp_repair
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                return
             _LOGGER.warning(
                 "Hp7StreamRelay: the stream is encrypted but no key is "
                 "available (serial=%s). The cloud only hands the key out "
@@ -795,6 +816,32 @@ class Hp7StreamRelay:
             "Hp7StreamRelay: stream is encrypted — decrypting it with the "
             "camera key (serial=%s)", self._serial,
         )
+
+    def _serial_needs_otp(self) -> bool:
+        """True when the cloud asked for elevation on the last key request."""
+        try:
+            bare = self._api._bare_serial(self._serial)
+            return bare in getattr(self._api, "key_needs_otp", set())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _raise_otp_repair(self) -> None:
+        """Repairs form asking for the code EZVIZ just mailed (loop thread)."""
+        try:
+            from homeassistant.helpers import issue_registry as ir
+
+            ir.async_create_issue(
+                self._hass,
+                DOMAIN,
+                f"encryption_otp_{self._serial}",
+                is_fixable=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="encryption_otp",
+                translation_placeholders={"serial": self._serial},
+                data={"serial": self._serial},
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7StreamRelay: could not raise OTP repair: %s", exc)
 
     def _check_scrambled(self, parser: Any) -> None:
         """Tell the user when the device is scrambling the stream (#41).
@@ -812,8 +859,8 @@ class Hp7StreamRelay:
         _LOGGER.warning(
             "Hp7StreamRelay: the doorbell is SCRAMBLING the video "
             "(PES_scrambling_control set on %d packets, serial=%s). Image/"
-            "Video Encryption is enabled on the device — turn it OFF in the "
-            "EZVIZ app (device Settings) for the LAN stream to decode.",
+            "Video Encryption is enabled on the device; looking for the key "
+            "so the stream can be decrypted.",
             parser.scrambled_packets, self._serial,
         )
         self._enable_decryption()

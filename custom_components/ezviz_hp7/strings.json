@@ -255,6 +255,27 @@
     "stream_encrypted": {
       "title": "Device is encrypting the video stream",
       "description": "Doorbell {serial} is scrambling the video stream (Image/Video Encryption is on). The container stays readable but the payloads are scrambled, so ffmpeg cannot decode and the live view stays black.\n\nOpen the EZVIZ app → the device → Settings → **Image/Video Encryption** and turn it off (it asks for the 6-letter device code). Note: a firmware or app update can silently re-enable it."
+    },
+    "encryption_otp": {
+      "title": "Encryption code needed for {serial}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Enter the code EZVIZ e-mailed you",
+            "description": "Doorbell {serial} encrypts its video, and EZVIZ has just e-mailed a 4-digit security code (subject \"[Device Encryption] Security Code\") to your account address. That code unlocks the stream, and it expires after about 30 minutes.\n\nEnter it below. Do **not** use the 6-character code printed on the device label — this firmware rejects it. Submitting an empty field asks EZVIZ for a fresh code.",
+            "data": {
+              "code": "Security code from the e-mail"
+            }
+          }
+        },
+        "error": {
+          "invalid_code": "EZVIZ did not accept that code. It has probably expired — submit an empty field to have a new one sent.",
+          "resent": "A new code has been sent. Check your e-mail and enter it here."
+        },
+        "abort": {
+          "no_device": "That doorbell is no longer set up in Home Assistant."
+        }
+      }
     }
   }
 }
