@@ -186,26 +186,32 @@ EZVIZ simply does not publish the link between an unlock event and the credentia
 
 Many doorbells ship with **Image/Video Encryption** enabled. It is deceptive when it bites: the MPEG-PS container, the PES packets and the NAL framing all stay perfectly readable, and only the NAL *bodies* are scrambled — so the stream looks structurally valid while ffmpeg decodes nothing but garbage, and every source/mode/codec combination fails identically.
 
-**Since 0.16.x the integration decrypts these streams**, so encryption no longer has to be switched off. When it detects the condition it needs the device's encryption key, which you can supply two ways:
+**Since 0.16.x the integration decrypts these streams**, so encryption no longer has to be switched off. When it detects the condition it needs the device's encryption key, and how you supply it depends on the firmware.
 
-**1. Paste the code** (works on most devices — the key is the verification code):
+**1. Paste the code** (works on most devices — there the key simply *is* the verification code):
 
 > Configure → **Encryption key** = the 6-character code from the device label → Submit
 
-**2. Fetch it from the cloud** (for firmware where the key is *not* the verification code). EZVIZ guards it behind a one-time password, so call the action twice from **Developer Tools → Actions**:
+**2. Answer the Repairs prompt** (for firmware where the key is *not* the verification code — the label code is rejected there with `1011`).
+
+On these devices the cloud refuses to hand the key to a normal session, and **that refusal is what makes EZVIZ e-mail you a 4-digit code** — subject `[Device Encryption] Security Code`, sender `service…@hicloudcam.com`, valid about **30 minutes**. It arrives when you open the live view, which is when the integration asks for the key.
+
+Since 0.17.0 that mail is expected rather than mysterious: the integration raises a prompt under **Settings → Repairs**, you paste the code, and it exchanges it for the real key, stores it and reloads. If the code has already expired, submit the field empty and a fresh one is sent.
+
+The same thing is available as an action if you prefer, from **Developer Tools → Actions** — call it once with no code to trigger the mail, then again with the code:
 
 ```yaml
-# first call: EZVIZ e-mails / texts you a one-time password
+# first call: EZVIZ e-mails you the code
 action: ezviz_hp7.fetch_encryption_key
 ```
 ```yaml
 # second call: hand it the code you received
 action: ezviz_hp7.fetch_encryption_key
 data:
-  code: "123456"
+  code: "1234"
 ```
 
-On success the key is stored in the integration's options automatically and the entry reloads into a decrypting stream. Clear the manual **Encryption key** field first so a wrong value can't take precedence.
+Either way the key lands in the integration's options and the entry reloads into a decrypting stream. Clear the manual **Encryption key** field first so a wrong value can't take precedence.
 
 #### Turning encryption off instead
 

@@ -163,26 +163,32 @@ EZVIZ semplicemente non pubblica il legame tra evento di sblocco e credenziale u
 
 Molti citofoni escono di fabbrica con la **crittografia immagini/video attiva**. Quando morde è ingannevole: il contenitore MPEG-PS, i pacchetti PES e il framing NAL restano perfettamente leggibili, e viene cifrato solo il **corpo** dei NAL — quindi il flusso sembra strutturalmente valido mentre ffmpeg decodifica solo spazzatura, e ogni combinazione di sorgente/modalità/codec fallisce identica.
 
-**Dalla 0.16.x l'integrazione decifra questi flussi**, quindi la crittografia non deve più essere disattivata. Quando rileva la condizione le serve la chiave del dispositivo, che puoi fornire in due modi:
+**Dalla 0.16.x l'integrazione decifra questi flussi**, quindi la crittografia non deve più essere disattivata. Quando rileva la condizione le serve la chiave del dispositivo, e come fornirla dipende dal firmware.
 
-**1. Incolla il codice** (funziona sulla maggior parte dei dispositivi — la chiave è il codice di verifica):
+**1. Incolla il codice** (funziona sulla maggior parte dei dispositivi — lì la chiave *è* proprio il codice di verifica):
 
 > Configura → **Chiave di crittografia** = il codice a 6 caratteri sull'etichetta → Invia
 
-**2. Recuperala dal cloud** (per i firmware in cui la chiave *non* è il codice di verifica). EZVIZ la protegge dietro una one-time password, quindi si chiama l'azione due volte da **Strumenti per sviluppatori → Azioni**:
+**2. Rispondi alla richiesta in Riparazioni** (per i firmware in cui la chiave *non* è il codice di verifica — lì il codice dell'etichetta viene rifiutato con `1011`).
+
+Su questi dispositivi il cloud rifiuta di consegnare la chiave a una sessione normale, e **è proprio quel rifiuto a far partire l'email di EZVIZ con un codice a 4 cifre** — oggetto `[Device Encryption] Security Code`, mittente `service…@hicloudcam.com`, valido circa **30 minuti**. Arriva quando apri il live, cioè nel momento in cui l'integrazione chiede la chiave.
+
+Dalla 0.17.0 quell'email non è più un mistero: l'integrazione apre una richiesta in **Impostazioni → Riparazioni**, tu incolli il codice, e lei lo scambia con la chiave vera, la salva e ricarica. Se il codice è già scaduto, invia il campo vuoto e ne arriva uno nuovo.
+
+Se preferisci, la stessa cosa è disponibile come azione da **Strumenti per sviluppatori → Azioni** — chiamala una volta senza codice per far partire l'email, poi di nuovo con il codice:
 
 ```yaml
-# prima chiamata: EZVIZ ti manda una one-time password via email / SMS
+# prima chiamata: EZVIZ ti manda il codice via email
 action: ezviz_hp7.fetch_encryption_key
 ```
 ```yaml
 # seconda chiamata: passale il codice ricevuto
 action: ezviz_hp7.fetch_encryption_key
 data:
-  code: "123456"
+  code: "1234"
 ```
 
-Al successo la chiave viene salvata automaticamente nelle opzioni dell'integrazione e l'entry si ricarica già in modalità decifrata. Svuota prima il campo **Chiave di crittografia** manuale, così un valore sbagliato non ha la precedenza.
+In entrambi i casi la chiave finisce nelle opzioni dell'integrazione e l'entry si ricarica già in modalità decifrata. Svuota prima il campo **Chiave di crittografia** manuale, così un valore sbagliato non ha la precedenza.
 
 #### In alternativa: disattivare la crittografia
 
