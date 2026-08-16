@@ -462,6 +462,10 @@ class Hp7StreamRelay:
         self._shared_vtm: Any = None
         self._shared_stop = threading.Event()
         self._shared_reader: Optional[threading.Thread] = None
+        # Event loop the shared session was opened from, so the broadcast
+        # reader thread can hop back onto it if it dies on its own (see
+        # _handle_reader_exit).
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Per-subscriber queues populated by the shared reader.
         self._sub_v_qs: List["queue.Queue[Optional[bytes]]"] = []
         self._sub_a_qs: List["queue.Queue[Optional[bytes]]"] = []
@@ -1042,6 +1046,7 @@ class Hp7StreamRelay:
         idle teardown timer is just reset.
         """
         loop = asyncio.get_event_loop()
+        self._loop = loop
         async with self._shared_lock:
             if self._shared_vtm is not None:
                 self._arm_idle_timer()
@@ -1138,8 +1143,41 @@ class Hp7StreamRelay:
             self._shared_reader = None
         _LOGGER.debug("Hp7StreamRelay: shared VTM torn down (serial=%s)", self._serial)
 
+    async def _handle_reader_exit(self, my_vtm: Any) -> None:
+        """Reset shared-session state after the broadcast reader dies on
+        its own (network error, device offline, etc. — NOT a requested
+        teardown via _shutdown_shared).
+
+        Without this, self._shared_vtm stays non-None forever: prewarm()
+        keeps seeing "a shared session is already active" and every future
+        client just subscribes to queues nobody is feeding any more, then
+        sits through the full ffmpeg stall timeout before giving up — on
+        loop, until HA itself is restarted.
+        """
+        async with self._shared_lock:
+            if self._shared_vtm is not my_vtm:
+                # Already superseded by a clean shutdown/restart; nothing
+                # to do here.
+                return
+            self._shared_vtm = None
+            self._active_lan = False
+            if self._idle_handle is not None:
+                self._idle_handle.cancel()
+                self._idle_handle = None
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, my_vtm.close)
+        except Exception:  # noqa: BLE001
+            pass
+        self._shared_reader = None
+        _LOGGER.debug(
+            "Hp7StreamRelay: shared VTM reset after unexpected reader exit "
+            "(serial=%s)", self._serial,
+        )
+
     def _broadcast_reader(self) -> None:
         """Read VTM payloads -> PesParser -> fan out to per-client queues."""
+        my_vtm = self._shared_vtm
         parser = PesParser()
         # Fresh session — a cached GOP from the previous source is stale.
         with self._gop_lock:
@@ -1282,6 +1320,18 @@ class Hp7StreamRelay:
                 try:
                     q.put_nowait(None)
                 except queue.Full:
+                    pass
+            if not self._shared_stop.is_set() and self._loop is not None:
+                # Exited on its own (network error) rather than via
+                # _shutdown_shared, which would have already cleared
+                # self._shared_vtm itself. Hop onto the event loop to reset
+                # it there too, so the next prewarm() opens a fresh session
+                # instead of reusing a session nothing is feeding any more.
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._handle_reader_exit(my_vtm), self._loop
+                    )
+                except Exception:  # noqa: BLE001
                     pass
             _LOGGER.info(
                 "Hp7StreamRelay: broadcast done video=%d B audio=%d B "
