@@ -391,40 +391,6 @@ class Hp7Api:
             _LOGGER.debug("EZVIZ HP7: local IP resolve failed for %s: %s", serial, exc)
             return None
 
-    def debug_connectivity_snapshot(self, serial: str) -> str:
-        """Best-effort one-line summary of what the EZVIZ cloud currently
-        reports for this device's connectivity (status code + CONNECTION
-        block), for comparing against a LAN-side "device offline" rejection.
-
-        The EZVIZ app's "online" badge reflects this same cloud-side status,
-        which can lag or differ from LAN reality (composite MAIN-CAM serials
-        in particular: the app can report the whole unit online while the
-        camera module behind it refuses to stream). Never raises — this is
-        diagnostic only and must not affect the retry/circuit-breaker flow.
-        """
-        try:
-            self.ensure_client()
-            if not self._client:
-                return "client unavailable"
-            devices = self._client.get_device_infos(serial)
-            device = None
-            if isinstance(devices, dict):
-                if isinstance(devices.get(serial), dict):
-                    device = devices[serial]
-                elif isinstance(devices.get("CONNECTION"), dict):
-                    device = devices
-            if not isinstance(device, dict):
-                return f"no device entry returned for {serial!r}"
-            device_infos = device.get("deviceInfos") or {}
-            connection = device.get("CONNECTION") or {}
-            return (
-                f"cloud status={device_infos.get('status')!r} "
-                f"localIp={connection.get('localIp')!r} "
-                f"netIp={connection.get('netIp')!r}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            return f"snapshot failed: {exc}"
-
     def _try_unlock(self, serial: str, lock_no: int) -> bool:
         """Attempt to unlock a specific lock.
 

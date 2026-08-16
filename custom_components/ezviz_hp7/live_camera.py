@@ -119,6 +119,17 @@ class Cpd7LanSource:
                 "response",
                 self._serial, local_ip, related,
             )
+            # fetch_lan_aes_key() caches the control key for
+            # Hp7Api.LAN_AES_KEY_TTL (1h) and is never invalidated on
+            # failure — every retry in that window keeps re-encrypting
+            # INIT/INVITE with the same key. If the doorbell rotates its
+            # local control key on a reboot, the device can't decrypt our
+            # request and falls back to exactly this generic plaintext
+            # rejection (Result 3, no <Session>) — indistinguishable on the
+            # wire from any other InviteStream refusal. Drop the cached key
+            # so the next attempt asks CAS for a fresh one instead of
+            # silently reusing a stale one for up to the full TTL.
+            self._api.invalidate_lan_aes_key(self._serial)
             raise
         self._client = client
         self._decoder = StreamDecoder(client.ecdh_priv)
@@ -218,20 +229,6 @@ DEAD_SUB_TIMEOUT = 30.0
 MIN_RETRY_INTERVAL = 30.0
 LOCKOUT_THRESHOLD = 3
 LOCKOUT_BACKOFF = 600.0
-# Cooldown for the LAN InviteStream's explicit "no <Session>" rejection
-# (_is_lan_channel_busy_error), as opposed to a network-level "can't reach it
-# at all" failure. Observed in practice: it does NOT self-clear under our
-# normal ~30s retry cadence even once the doorbell is confirmed back online
-# (via the cloud VTM path) — only a full HA restart, which happens to pause
-# attempts for a while, reliably un-sticks it. The INVITE XML we send
-# advertises `Authentication Interval="180"` (cpd7/lan_client.py); the
-# working theory is the device holds a session slot for that long, and our
-# own frequent retries keep refreshing its "still active" timer instead of
-# letting it expire — i.e. we may be the ones preventing our own recovery.
-# Not confirmed against protocol docs (none exist for this reverse-engineered
-# protocol, see cpd7/__init__.py) — a heuristic from observed behaviour, set
-# comfortably past that 180s with margin.
-LAN_CHANNEL_BUSY_COOLDOWN = 210.0
 
 INPUT_ACCEPT_TIMEOUT = 20.0
 
@@ -336,19 +333,6 @@ def _is_offline_error(exc: BaseException) -> bool:
         or "host is unreachable" in text
         or "network is unreachable" in text
     )
-
-
-def _is_lan_channel_busy_error(exc: BaseException) -> bool:
-    """True for the LAN InviteStream's explicit "no <Session>" rejection.
-
-    Distinct from the broader _is_offline_error(): a plain network-level
-    failure (connection refused, host unreachable) really does mean "still
-    booting", where a quick 30s retry is right. This one is the device
-    actively answering "I won't open this channel" while otherwise fully
-    reachable and working (confirmed via the cloud VTM path in parallel) —
-    see LAN_CHANNEL_BUSY_COOLDOWN for why it gets its own, longer cooldown.
-    """
-    return "no <session> in invitestream" in str(exc).lower()
 
 
 def _free_local_port() -> int:
@@ -537,10 +521,6 @@ class Hp7StreamRelay:
         # the breaker's 10-minute lockout reserved for the risk it was
         # actually built to guard against.
         self._last_error_offline: bool = False
-        # Whether the last failure was the LAN "channel busy" rejection
-        # specifically — see _is_lan_channel_busy_error() /
-        # LAN_CHANNEL_BUSY_COOLDOWN.
-        self._last_error_lan_busy: bool = False
         self._consecutive_failures: int = 0
         self._connect_lock = asyncio.Lock()
         # Shared (pre-warmed) VTM session + broadcast bookkeeping.
@@ -1161,7 +1141,6 @@ class Hp7StreamRelay:
                 self._consecutive_failures = 0
                 self._last_error = None
                 self._last_error_offline = False
-                self._last_error_lan_busy = False
                 _LOGGER.info(
                     "Hp7StreamRelay: pre-warm source up (serial=%s src=%s ssn=%s)",
                     self._serial,
@@ -1172,28 +1151,12 @@ class Hp7StreamRelay:
                 self._consecutive_failures += 1
                 self._last_error = str(exc)
                 self._last_error_offline = _is_offline_error(exc)
-                self._last_error_lan_busy = _is_lan_channel_busy_error(exc)
                 _LOGGER.warning(
                     "Hp7StreamRelay: prewarm failed (%d/%d, offline=%s, "
-                    "lan_busy=%s, source=%s): %s",
+                    "source=%s): %s",
                     self._consecutive_failures, LOCKOUT_THRESHOLD,
-                    self._last_error_offline, self._last_error_lan_busy,
-                    self._stream_source, exc,
+                    self._last_error_offline, self._stream_source, exc,
                 )
-                # Cross-check against what the cloud itself reports for this
-                # device, so "the EZVIZ app shows it online but we can't
-                # stream" is visible in the log instead of requiring the
-                # user to alt-tab to the app. Throttled (1st failure, then
-                # every 5th) so a long outage doesn't turn into a pagelist
-                # call every 20-30s on top of the retries themselves.
-                if self._consecutive_failures == 1 or self._consecutive_failures % 5 == 0:
-                    snapshot = await loop.run_in_executor(
-                        None, self._api.debug_connectivity_snapshot, self._serial
-                    )
-                    _LOGGER.warning(
-                        "Hp7StreamRelay: cloud connectivity snapshot "
-                        "(serial=%s): %s", self._serial, snapshot,
-                    )
                 return
             self._shared_vtm = vtm
             self._active_lan = isinstance(
@@ -1447,13 +1410,6 @@ class Hp7StreamRelay:
             )
 
     def _required_cooldown(self) -> float:
-        if self._last_error_lan_busy:
-            # Checked before the general offline case: retrying too fast
-            # appears to be exactly what keeps the device's LAN channel
-            # stuck (see LAN_CHANNEL_BUSY_COOLDOWN) — a plain 30s cadence
-            # here would just perpetuate the problem it's meant to recover
-            # from.
-            return LAN_CHANNEL_BUSY_COOLDOWN
         if self._last_error_offline:
             # A rebooting doorbell isn't the account-ban risk the lockout
             # exists for (see module docstring) — keep retrying at the
