@@ -43,6 +43,7 @@ config could lock the EZVIZ account in under a minute.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import queue
 import socket
@@ -105,7 +106,20 @@ class Cpd7LanSource:
             local_ip, related, key, channel=self._channel,
             stream_quality=self._stream_quality,
         )
-        client.start()
+        try:
+            client.start()
+        except Exception:
+            # Same level as the "prewarm failed" warning below so this shows
+            # up without needing debug logging enabled — ip/related let us
+            # tell "stale/wrong LAN target" apart from "device genuinely not
+            # answering there".
+            _LOGGER.warning(
+                "Hp7StreamRelay: LAN InviteStream rejected (serial=%s ip=%s "
+                "related=%s) — see the error below for the device's raw "
+                "response",
+                self._serial, local_ip, related,
+            )
+            raise
         self._client = client
         self._decoder = StreamDecoder(client.ecdh_priv)
         _LOGGER.info(
@@ -272,6 +286,42 @@ def _sniff_video_codec(payload: bytes) -> Optional[str]:
         if nal in (0x67, 0x68, 0x65):
             return "h264"
     return None
+
+
+def _is_offline_error(exc: BaseException) -> bool:
+    """True when ``exc`` looks like "the device didn't answer" rather than a
+    misconfiguration or an EZVIZ-account/cloud problem.
+
+    The circuit breaker's LOCKOUT_BACKOFF exists to protect the EZVIZ
+    account from a bad config hammering the cloud (see module docstring) —
+    that's a real ban risk. A doorbell that's mid-reboot is not: it comes
+    back on its own in ~60-120s, and every source in this codebase that
+    detects it says so explicitly (LAN InviteStream timeout/refusal, VTM
+    stream-info timeout, the local SDK's "offline or unreachable"). Treating
+    that the same as a bad config means paying a 10-minute penalty for a
+    problem that was already fixing itself.
+    """
+    if isinstance(
+        exc, (ConnectionRefusedError, TimeoutError, socket.timeout, ConnectionError)
+    ):
+        return True
+    # EHOSTUNREACH / ENETUNREACH: the LAN can't route to the doorbell's IP at
+    # all — no ARP reply, cable/wifi down. Neither maps to a ConnectionError
+    # subclass in Python (only ECONNREFUSED/ECONNRESET/EPIPE/ECONNABORTED
+    # do), so it needs its own check. Observed in practice ~1s after a
+    # doorbell power-off, before the LAN InviteStream starts answering with
+    # its own explicit "offline" rejection.
+    if getattr(exc, "errno", None) in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+        return True
+    text = str(exc).lower()
+    return (
+        "offline or unreachable" in text
+        or "timed out waiting for vtm stream info" in text
+        or "no <session> in invitestream" in text
+        or "connection refused" in text
+        or "host is unreachable" in text
+        or "network is unreachable" in text
+    )
 
 
 def _free_local_port() -> int:
@@ -455,6 +505,11 @@ class Hp7StreamRelay:
         self._port: int = 0
         self._last_attempt: float = 0.0
         self._last_error: Optional[str] = None
+        # Whether the last prewarm() failure looked like "device offline"
+        # rather than a misconfiguration — see _is_offline_error(). Keeps
+        # the breaker's 10-minute lockout reserved for the risk it was
+        # actually built to guard against.
+        self._last_error_offline: bool = False
         self._consecutive_failures: int = 0
         self._connect_lock = asyncio.Lock()
         # Shared (pre-warmed) VTM session + broadcast bookkeeping.
@@ -1074,6 +1129,7 @@ class Hp7StreamRelay:
                 info = await loop.run_in_executor(None, vtm.start)
                 self._consecutive_failures = 0
                 self._last_error = None
+                self._last_error_offline = False
                 _LOGGER.info(
                     "Hp7StreamRelay: pre-warm source up (serial=%s src=%s ssn=%s)",
                     self._serial,
@@ -1083,10 +1139,27 @@ class Hp7StreamRelay:
             except Exception as exc:
                 self._consecutive_failures += 1
                 self._last_error = str(exc)
+                self._last_error_offline = _is_offline_error(exc)
                 _LOGGER.warning(
-                    "Hp7StreamRelay: prewarm failed (%d/%d): %s",
-                    self._consecutive_failures, LOCKOUT_THRESHOLD, exc,
+                    "Hp7StreamRelay: prewarm failed (%d/%d, offline=%s, "
+                    "source=%s): %s",
+                    self._consecutive_failures, LOCKOUT_THRESHOLD,
+                    self._last_error_offline, self._stream_source, exc,
                 )
+                # Cross-check against what the cloud itself reports for this
+                # device, so "the EZVIZ app shows it online but we can't
+                # stream" is visible in the log instead of requiring the
+                # user to alt-tab to the app. Throttled (1st failure, then
+                # every 5th) so a long outage doesn't turn into a pagelist
+                # call every 20-30s on top of the retries themselves.
+                if self._consecutive_failures == 1 or self._consecutive_failures % 5 == 0:
+                    snapshot = await loop.run_in_executor(
+                        None, self._api.debug_connectivity_snapshot, self._serial
+                    )
+                    _LOGGER.warning(
+                        "Hp7StreamRelay: cloud connectivity snapshot "
+                        "(serial=%s): %s", self._serial, snapshot,
+                    )
                 return
             self._shared_vtm = vtm
             self._active_lan = isinstance(
@@ -1340,6 +1413,12 @@ class Hp7StreamRelay:
             )
 
     def _required_cooldown(self) -> float:
+        if self._last_error_offline:
+            # A rebooting doorbell isn't the account-ban risk the lockout
+            # exists for (see module docstring) — keep retrying at the
+            # normal cadence instead of escalating, so a reboot (~60-120s)
+            # doesn't cost a 10-minute wait.
+            return MIN_RETRY_INTERVAL
         if self._consecutive_failures >= LOCKOUT_THRESHOLD:
             return LOCKOUT_BACKOFF
         return MIN_RETRY_INTERVAL
