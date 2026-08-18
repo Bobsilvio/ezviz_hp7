@@ -43,6 +43,7 @@ config could lock the EZVIZ account in under a minute.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import queue
 import socket
@@ -105,7 +106,31 @@ class Cpd7LanSource:
             local_ip, related, key, channel=self._channel,
             stream_quality=self._stream_quality,
         )
-        client.start()
+        try:
+            client.start()
+        except Exception:
+            # Same level as the "prewarm failed" warning below so this shows
+            # up without needing debug logging enabled — ip/related let us
+            # tell "stale/wrong LAN target" apart from "device genuinely not
+            # answering there".
+            _LOGGER.warning(
+                "Hp7StreamRelay: LAN InviteStream rejected (serial=%s ip=%s "
+                "related=%s) — see the error below for the device's raw "
+                "response",
+                self._serial, local_ip, related,
+            )
+            # fetch_lan_aes_key() caches the control key for
+            # Hp7Api.LAN_AES_KEY_TTL (1h) and is never invalidated on
+            # failure — every retry in that window keeps re-encrypting
+            # INIT/INVITE with the same key. If the doorbell rotates its
+            # local control key on a reboot, the device can't decrypt our
+            # request and falls back to exactly this generic plaintext
+            # rejection (Result 3, no <Session>) — indistinguishable on the
+            # wire from any other InviteStream refusal. Drop the cached key
+            # so the next attempt asks CAS for a fresh one instead of
+            # silently reusing a stale one for up to the full TTL.
+            self._api.invalidate_lan_aes_key(self._serial)
+            raise
         self._client = client
         self._decoder = StreamDecoder(client.ecdh_priv)
         _LOGGER.info(
@@ -339,6 +364,42 @@ def _sniff_video_codec(payload: bytes) -> Optional[str]:
     return None
 
 
+def _is_offline_error(exc: BaseException) -> bool:
+    """True when ``exc`` looks like "the device didn't answer" rather than a
+    misconfiguration or an EZVIZ-account/cloud problem.
+
+    The circuit breaker's LOCKOUT_BACKOFF exists to protect the EZVIZ
+    account from a bad config hammering the cloud (see module docstring) —
+    that's a real ban risk. A doorbell that's mid-reboot is not: it comes
+    back on its own in ~60-120s, and every source in this codebase that
+    detects it says so explicitly (LAN InviteStream timeout/refusal, VTM
+    stream-info timeout, the local SDK's "offline or unreachable"). Treating
+    that the same as a bad config means paying a 10-minute penalty for a
+    problem that was already fixing itself.
+    """
+    if isinstance(
+        exc, (ConnectionRefusedError, TimeoutError, socket.timeout, ConnectionError)
+    ):
+        return True
+    # EHOSTUNREACH / ENETUNREACH: the LAN can't route to the doorbell's IP at
+    # all — no ARP reply, cable/wifi down. Neither maps to a ConnectionError
+    # subclass in Python (only ECONNREFUSED/ECONNRESET/EPIPE/ECONNABORTED
+    # do), so it needs its own check. Observed in practice ~1s after a
+    # doorbell power-off, before the LAN InviteStream starts answering with
+    # its own explicit "offline" rejection.
+    if getattr(exc, "errno", None) in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+        return True
+    text = str(exc).lower()
+    return (
+        "offline or unreachable" in text
+        or "timed out waiting for vtm stream info" in text
+        or "no <session> in invitestream" in text
+        or "connection refused" in text
+        or "host is unreachable" in text
+        or "network is unreachable" in text
+    )
+
+
 def _free_local_port() -> int:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(("127.0.0.1", 0))
@@ -520,6 +581,11 @@ class Hp7StreamRelay:
         self._port: int = 0
         self._last_attempt: float = 0.0
         self._last_error: Optional[str] = None
+        # Whether the last prewarm() failure looked like "device offline"
+        # rather than a misconfiguration — see _is_offline_error(). Keeps
+        # the breaker's 10-minute lockout reserved for the risk it was
+        # actually built to guard against.
+        self._last_error_offline: bool = False
         self._consecutive_failures: int = 0
         self._connect_lock = asyncio.Lock()
         # Shared (pre-warmed) VTM session + broadcast bookkeeping.
@@ -527,6 +593,10 @@ class Hp7StreamRelay:
         self._shared_vtm: Any = None
         self._shared_stop = threading.Event()
         self._shared_reader: Optional[threading.Thread] = None
+        # Event loop the shared session was opened from, so the broadcast
+        # reader thread can hop back onto it if it dies on its own (see
+        # _handle_reader_exit).
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Per-subscriber queues populated by the shared reader.
         self._sub_v_qs: List["queue.Queue[Optional[bytes]]"] = []
         self._sub_a_qs: List["queue.Queue[Optional[bytes]]"] = []
@@ -1142,6 +1212,7 @@ class Hp7StreamRelay:
         idle teardown timer is just reset.
         """
         loop = asyncio.get_event_loop()
+        self._loop = loop
         async with self._shared_lock:
             if self._shared_vtm is not None:
                 self._arm_idle_timer()
@@ -1169,6 +1240,7 @@ class Hp7StreamRelay:
                 info = await loop.run_in_executor(None, vtm.start)
                 self._consecutive_failures = 0
                 self._last_error = None
+                self._last_error_offline = False
                 _LOGGER.info(
                     "Hp7StreamRelay: pre-warm source up (serial=%s src=%s ssn=%s)",
                     self._serial,
@@ -1178,9 +1250,12 @@ class Hp7StreamRelay:
             except Exception as exc:
                 self._consecutive_failures += 1
                 self._last_error = str(exc)
+                self._last_error_offline = _is_offline_error(exc)
                 _LOGGER.warning(
-                    "Hp7StreamRelay: prewarm failed (%d/%d): %s",
-                    self._consecutive_failures, LOCKOUT_THRESHOLD, exc,
+                    "Hp7StreamRelay: prewarm failed (%d/%d, offline=%s, "
+                    "source=%s): %s",
+                    self._consecutive_failures, LOCKOUT_THRESHOLD,
+                    self._last_error_offline, self._stream_source, exc,
                 )
                 return
             self._shared_vtm = vtm
@@ -1238,8 +1313,41 @@ class Hp7StreamRelay:
             self._shared_reader = None
         _LOGGER.debug("Hp7StreamRelay: shared VTM torn down (serial=%s)", self._serial)
 
+    async def _handle_reader_exit(self, my_vtm: Any) -> None:
+        """Reset shared-session state after the broadcast reader dies on
+        its own (network error, device offline, etc. — NOT a requested
+        teardown via _shutdown_shared).
+
+        Without this, self._shared_vtm stays non-None forever: prewarm()
+        keeps seeing "a shared session is already active" and every future
+        client just subscribes to queues nobody is feeding any more, then
+        sits through the full ffmpeg stall timeout before giving up — on
+        loop, until HA itself is restarted.
+        """
+        async with self._shared_lock:
+            if self._shared_vtm is not my_vtm:
+                # Already superseded by a clean shutdown/restart; nothing
+                # to do here.
+                return
+            self._shared_vtm = None
+            self._active_lan = False
+            if self._idle_handle is not None:
+                self._idle_handle.cancel()
+                self._idle_handle = None
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, my_vtm.close)
+        except Exception:  # noqa: BLE001
+            pass
+        self._shared_reader = None
+        _LOGGER.debug(
+            "Hp7StreamRelay: shared VTM reset after unexpected reader exit "
+            "(serial=%s)", self._serial,
+        )
+
     def _broadcast_reader(self) -> None:
         """Read VTM payloads -> PesParser -> fan out to per-client queues."""
+        my_vtm = self._shared_vtm
         parser = PesParser()
         # Fresh session — a cached GOP from the previous source is stale.
         with self._gop_lock:
@@ -1384,6 +1492,18 @@ class Hp7StreamRelay:
                     q.put_nowait(None)
                 except queue.Full:
                     pass
+            if not self._shared_stop.is_set() and self._loop is not None:
+                # Exited on its own (network error) rather than via
+                # _shutdown_shared, which would have already cleared
+                # self._shared_vtm itself. Hop onto the event loop to reset
+                # it there too, so the next prewarm() opens a fresh session
+                # instead of reusing a session nothing is feeding any more.
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._handle_reader_exit(my_vtm), self._loop
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             _LOGGER.info(
                 "Hp7StreamRelay: broadcast done video=%d B audio=%d B "
                 "resync_drops=%d",
@@ -1391,6 +1511,12 @@ class Hp7StreamRelay:
             )
 
     def _required_cooldown(self) -> float:
+        if self._last_error_offline:
+            # A rebooting doorbell isn't the account-ban risk the lockout
+            # exists for (see module docstring) — keep retrying at the
+            # normal cadence instead of escalating, so a reboot (~60-120s)
+            # doesn't cost a 10-minute wait.
+            return MIN_RETRY_INTERVAL
         if self._consecutive_failures >= LOCKOUT_THRESHOLD:
             return LOCKOUT_BACKOFF
         return MIN_RETRY_INTERVAL
