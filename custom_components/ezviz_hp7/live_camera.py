@@ -36,6 +36,8 @@ since the raw h264/aac inputs carry no container timestamps.
 
 A circuit breaker rate-limits accept attempts: MIN_RETRY_INTERVAL = 30 s,
 LOCKOUT_THRESHOLD = 3 consecutive failures flips to LOCKOUT_BACKOFF
+(failures that merely mean "the device didn't answer" back off along their
+own gentler curve instead, up to OFFLINE_MAX_BACKOFF)
 (10 min). HA's Stream component is happy to reconnect every few seconds
 when an upstream stream errors; without this throttle a single bad
 config could lock the EZVIZ account in under a minute.
@@ -229,6 +231,13 @@ DEAD_SUB_TIMEOUT = 30.0
 MIN_RETRY_INTERVAL = 30.0
 LOCKOUT_THRESHOLD = 3
 LOCKOUT_BACKOFF = 600.0
+# Ceiling for the "device offline" retry cadence (#52). That branch stays
+# fast so a reboot recovers in ~60-120s, but it must not stay fast for
+# ever: each LAN retry drops the cached control key and re-fetches it,
+# which costs a p2p-register plus a CAS query. A stall lasting hours would
+# otherwise mean hundreds of cloud calls — the very thing LOCKOUT_BACKOFF
+# exists to prevent.
+OFFLINE_MAX_BACKOFF = 300.0
 
 INPUT_ACCEPT_TIMEOUT = 20.0
 
@@ -1513,10 +1522,21 @@ class Hp7StreamRelay:
     def _required_cooldown(self) -> float:
         if self._last_error_offline:
             # A rebooting doorbell isn't the account-ban risk the lockout
-            # exists for (see module docstring) — keep retrying at the
-            # normal cadence instead of escalating, so a reboot (~60-120s)
-            # doesn't cost a 10-minute wait.
-            return MIN_RETRY_INTERVAL
+            # exists for (see module docstring), so this branch starts at
+            # the normal cadence and a reboot (~60-120s) doesn't cost a
+            # 10-minute wait.
+            #
+            # It does back off, though. "Offline" also covers the LAN
+            # channel refusing InviteStream, which #52 measured lasting
+            # 2h20m on an HP5 while the device was demonstrably alive —
+            # and since every LAN retry now invalidates the cached control
+            # key, each one costs a p2p-register plus a CAS query. Held at
+            # a flat 30s that stall would be ~280 retries and ~560 cloud
+            # calls; doubling every second failure up to OFFLINE_MAX_BACKOFF
+            # makes it ~33, while the first two retries still land inside
+            # the first minute where a genuine reboot recovers.
+            step = max(0, self._consecutive_failures - 3) // 2
+            return min(MIN_RETRY_INTERVAL * (2 ** step), OFFLINE_MAX_BACKOFF)
         if self._consecutive_failures >= LOCKOUT_THRESHOLD:
             return LOCKOUT_BACKOFF
         return MIN_RETRY_INTERVAL
