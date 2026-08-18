@@ -215,6 +215,29 @@ INPUT_ACCEPT_TIMEOUT = 20.0
 PREWARM_IDLE_TIMEOUT = 120.0
 
 
+def _iter_nal_spans(data: bytes):
+    """Yield (start_code_offset, header_byte_offset) for every NAL.
+
+    Same scan as _iter_nal_types, but keeps the offsets so callers can cut
+    the payload at NAL boundaries.
+    """
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if data[i] == 0 and data[i + 1] == 0:
+            if data[i + 2] == 1:
+                if i + 3 < n:
+                    yield i, i + 3
+                i += 4
+                continue
+            if data[i + 2] == 0 and i + 3 < n and data[i + 3] == 1:
+                if i + 4 < n:
+                    yield i, i + 4
+                i += 5
+                continue
+        i += 1
+
+
 def _iter_nal_types(data: bytes):
     """Yield raw NAL header bytes (the byte right after each start code).
 
@@ -237,19 +260,61 @@ def _iter_nal_types(data: bytes):
         i += 1
 
 
-# Keyframe start markers (parameter sets that lead an IDR): HEVC VPS with
-# nuh_layer_id=0, H.264 SPS. Both 4- and 3-byte start codes. Used by the
-# GOP cache to know where a decodable segment begins (#37).
-_KEYFRAME_MARKERS = (
-    b"\x00\x00\x00\x01\x40\x01",
-    b"\x00\x00\x01\x40\x01",
-    b"\x00\x00\x00\x01\x67",
-    b"\x00\x00\x01\x67",
+# Parameter-set start markers: HEVC VPS/SPS/PPS with nuh_layer_id=0 and
+# temporal_id_plus1=1 (so the second byte pins them down and can't collide
+# with an H.264 header), H.264 SPS/PPS. Both 4- and 3-byte start codes.
+_PARAM_SET_MARKERS = (
+    b"\x00\x00\x00\x01\x40\x01", b"\x00\x00\x01\x40\x01",   # HEVC VPS
+    b"\x00\x00\x00\x01\x42\x01", b"\x00\x00\x01\x42\x01",   # HEVC SPS
+    b"\x00\x00\x00\x01\x44\x01", b"\x00\x00\x01\x44\x01",   # HEVC PPS
+    b"\x00\x00\x00\x01\x67", b"\x00\x00\x01\x67",           # H.264 SPS
+    b"\x00\x00\x00\x01\x68", b"\x00\x00\x01\x68",           # H.264 PPS
 )
+
+# Random-access points — a frame a decoder can start on. HEVC BLA (16-18),
+# IDR_W_RADL (19), IDR_N_LP (20) and CRA (21); H.264 IDR (5). These are
+# what actually reset the reference picture set, and firmware does NOT
+# necessarily precede every one of them with parameter sets (#51): the
+# HPD7 on V5.4.0 repeats VPS/SPS/PPS far less often than it emits IDRs.
+_RAP_MARKERS = (
+    b"\x00\x00\x00\x01\x20\x01", b"\x00\x00\x01\x20\x01",   # HEVC BLA_W_LP
+    b"\x00\x00\x00\x01\x22\x01", b"\x00\x00\x01\x22\x01",   # HEVC BLA_W_RADL
+    b"\x00\x00\x00\x01\x24\x01", b"\x00\x00\x01\x24\x01",   # HEVC BLA_N_LP
+    b"\x00\x00\x00\x01\x26\x01", b"\x00\x00\x01\x26\x01",   # HEVC IDR_W_RADL
+    b"\x00\x00\x00\x01\x28\x01", b"\x00\x00\x01\x28\x01",   # HEVC IDR_N_LP
+    b"\x00\x00\x00\x01\x2a\x01", b"\x00\x00\x01\x2a\x01",   # HEVC CRA
+    b"\x00\x00\x00\x01\x65", b"\x00\x00\x01\x65",           # H.264 IDR
+)
+
+# Kept for the fan-out resync path, which only needs "can a viewer join
+# here" — parameter sets and random-access points both qualify.
+_KEYFRAME_MARKERS = _PARAM_SET_MARKERS + _RAP_MARKERS
 
 
 def _has_keyframe(payload: bytes) -> bool:
     return any(m in payload for m in _KEYFRAME_MARKERS)
+
+
+def _has_param_sets(payload: bytes) -> bool:
+    return any(m in payload for m in _PARAM_SET_MARKERS)
+
+
+def _extract_param_sets(payload: bytes) -> bytes:
+    """Return the parameter-set NALs in ``payload``, framing included.
+
+    Slices from the first parameter set up to the start of the first NAL
+    that isn't one, so the result is a self-contained Annex B prefix a
+    decoder can be initialised with.
+    """
+    spans = [(off, payload[hdr]) for off, hdr in _iter_nal_spans(payload)]
+    start = None
+    for idx, (off, hdr) in enumerate(spans):
+        is_ps = hdr in (0x40, 0x42, 0x44, 0x67, 0x68)
+        if is_ps and start is None:
+            start = off
+        elif not is_ps and start is not None:
+            return payload[start:off]
+    return payload[start:] if start is not None else b""
 
 
 def _sniff_video_codec(payload: bytes) -> Optional[str]:
@@ -510,6 +575,11 @@ class Hp7StreamRelay:
         # sitting blank until the next keyframe. Guarded by _gop_lock
         # (updated from the broadcast reader thread, read at subscribe).
         self._gop_buf = bytearray()
+        # Most recent VPS/SPS/PPS seen, kept apart from the GOP buffer:
+        # this firmware emits IDRs far more often than it repeats the
+        # parameter sets, so a GOP that starts on an IDR still needs them
+        # prepended before a decoder can use it (#51).
+        self._param_sets: bytes = b""
         self._gop_lock = threading.Lock()
         # True while the active shared source is the CPD7 LAN pipeline.
         self._active_lan: bool = False
@@ -708,16 +778,26 @@ class Hp7StreamRelay:
             self._ps_dump_buf = bytearray()
 
     def _gop_update(self, chunk: bytes) -> None:
-        """Track the stream since the last keyframe (#37).
+        """Track the stream since the last random-access point (#37, #51).
 
         Called from the broadcast reader thread for every video-bearing
-        chunk. When a chunk carries a keyframe (VPS/SPS marker) the cache
-        restarts from that chunk; otherwise the chunk is appended. Chunk
-        boundaries are arbitrary, so the cache may lead with a partial pack
-        or NAL — both the mpeg demuxer and the raw ES parsers resync on the
-        next start code, and +discardcorrupt drops the remnant frame.
+        chunk. The cache restarts whenever a chunk carries a point a
+        decoder can start on — parameter sets or an IDR/CRA. Anything else
+        is appended. Chunk boundaries are arbitrary, so the cache may lead
+        with a partial pack or NAL — both the mpeg demuxer and the raw ES
+        parsers resync on the next start code, and +discardcorrupt drops
+        the remnant frame.
+
+        Restarting on an IDR alone is not enough to hand a decoder, since
+        it still needs VPS/SPS/PPS and this firmware does not repeat them
+        with every IDR (#51). So the most recent parameter sets are kept
+        separately and prepended at snapshot time.
         """
         with self._gop_lock:
+            if _has_param_sets(chunk):
+                extracted = _extract_param_sets(chunk)
+                if extracted:
+                    self._param_sets = extracted
             if _has_keyframe(chunk):
                 self._kf_markers_seen += 1
                 self._gop_buf = bytearray(chunk)
@@ -730,9 +810,29 @@ class Hp7StreamRelay:
                     self._gop_buf.extend(chunk)
 
     def _gop_snapshot(self) -> List[bytes]:
-        """Return the cached GOP as queue-sized chunks for preloading."""
+        """Return a decodable GOP prefix as queue-sized chunks (#51).
+
+        Preloading a segment the decoder cannot start on is worse than
+        preloading nothing: ffmpeg burns through it emitting "Could not
+        find ref with POC n" for every frame and shows no picture anyway,
+        so the viewer waits for the next real keyframe regardless. Measured
+        on an HPD7 (V5.4.0): 27 undecodable frames replayed in 31 ms, then
+        10-12 s of black.
+
+        So only hand back a buffer that starts on a random-access point,
+        and prepend the last parameter sets when the buffer itself lacks
+        them.
+        """
         with self._gop_lock:
             buf = bytes(self._gop_buf)
+            params = self._param_sets
+        if not buf or not _has_keyframe(buf):
+            return []
+        if not _has_param_sets(buf):
+            if not params:
+                # An IDR with no parameter sets anywhere is not decodable.
+                return []
+            buf = params + buf
         return [buf[i:i + RELAY_CHUNK] for i in range(0, len(buf), RELAY_CHUNK)]
 
     def _maybe_decrypt(self, body: bytes) -> bytes:
@@ -1144,6 +1244,7 @@ class Hp7StreamRelay:
         # Fresh session — a cached GOP from the previous source is stale.
         with self._gop_lock:
             self._gop_buf = bytearray()
+            self._param_sets = b""
         self._es_dump_buf = bytearray()
         self._es_dump_done = False
         self._ps_dump_buf = bytearray()
