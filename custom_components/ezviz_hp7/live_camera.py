@@ -227,6 +227,10 @@ PROGRESS_LOG_SEC = 60.0
 # A subscriber queue saturated this long with nothing draining it has no live
 # consumer left; evict it so its leaked ffmpeg stops competing for CPU (#44).
 DEAD_SUB_TIMEOUT = 30.0
+# How long a single sendall() to a client's ffmpeg may block before we give
+# up on that client. Slightly above DEAD_SUB_TIMEOUT so the gentler
+# eviction path gets its chance first (#51).
+SEND_STALL_TIMEOUT = 45.0
 
 MIN_RETRY_INTERVAL = 30.0
 LOCKOUT_THRESHOLD = 3
@@ -478,6 +482,36 @@ def _mk_drain(table: dict, q: Any):
     return _stamp
 
 
+def _put_sentinel(q: "queue.Queue[Optional[bytes]]") -> None:
+    """Deliver the stop sentinel, clearing the queue first if need be (#51).
+
+    Under the drop-oldest policy a subscriber queue whose consumer is even
+    marginally slower than the producer sits full permanently by design, so
+    a bare put_nowait(None) raises queue.Full exactly when the sentinel
+    matters most — on eviction and on teardown. The sender thread then never
+    sees it, _handle_client never reaches its finally, and its ffmpeg is
+    never killed: one leaked process per session, plus the mjpeg one.
+    Draining first costs the queued backlog, which is being discarded
+    anyway.
+    """
+    try:
+        q.put_nowait(None)
+        return
+    except queue.Full:
+        pass
+    try:
+        while True:
+            q.get_nowait()
+    except queue.Empty:
+        pass
+    try:
+        q.put_nowait(None)
+    except queue.Full:
+        # Producer refilled it between the drain and the put; the sender
+        # also watches the stop event, so this is not the only way out.
+        pass
+
+
 def _sender_thread(
     listener: socket.socket,
     q: "queue.Queue[Optional[bytes]]",
@@ -503,6 +537,16 @@ def _sender_thread(
             pass
 
     sent = 0
+    # A blocking sendall() to an ffmpeg that has stopped reading never
+    # returns, and neither the stop event nor a queue sentinel can reach a
+    # thread parked inside it — that is how sessions leaked an ffmpeg each
+    # (#51). A send timeout is the only thing that unblocks it. A consumer
+    # that has taken nothing for this long is gone, so treat the timeout as
+    # terminal rather than resuming a half-written frame.
+    try:
+        conn.settimeout(SEND_STALL_TIMEOUT)
+    except OSError:
+        pass
     try:
         while not stop.is_set():
             try:
@@ -518,6 +562,13 @@ def _sender_thread(
             try:
                 conn.sendall(payload)
                 sent += len(payload)
+            except socket.timeout:
+                _LOGGER.warning(
+                    "Hp7StreamRelay: %s consumer stopped reading for %.0fs — "
+                    "closing it so its ffmpeg can be reaped (%d B sent)",
+                    label, SEND_STALL_TIMEOUT, sent,
+                )
+                return
             except (BrokenPipeError, ConnectionResetError, OSError):
                 return
     finally:
@@ -785,10 +836,9 @@ class Hp7StreamRelay:
             except ValueError:
                 pass
             # Sentinel so the sender thread exits and the client tears down.
-            try:
-                q.put_nowait(None)
-            except queue.Full:
-                pass
+            # The queue is full here by definition, so this has to drain it
+            # first or the sentinel never lands and the client leaks (#51).
+            _put_sentinel(q)
             _LOGGER.warning(
                 "Hp7StreamRelay: evicted a %s subscriber whose consumer took "
                 "nothing for %.0fs (serial=%s, %d left)",
@@ -1303,11 +1353,12 @@ class Hp7StreamRelay:
             vtm = self._shared_vtm
             self._shared_vtm = None
             self._shared_stop.set()
-            for q in list(self._sub_v_qs) + list(self._sub_a_qs):
-                try:
-                    q.put_nowait(None)
-                except queue.Full:
-                    pass
+            for q in (
+                list(self._sub_v_qs)
+                + list(self._sub_a_qs)
+                + list(self._sub_raw_qs)  # LAN clients subscribe here (#51)
+            ):
+                _put_sentinel(q)
             if self._idle_handle is not None:
                 self._idle_handle.cancel()
                 self._idle_handle = None
@@ -1497,10 +1548,7 @@ class Hp7StreamRelay:
                 + list(self._sub_a_qs)
                 + list(self._sub_raw_qs)
             ):
-                try:
-                    q.put_nowait(None)
-                except queue.Full:
-                    pass
+                _put_sentinel(q)
             if not self._shared_stop.is_set() and self._loop is not None:
                 # Exited on its own (network error) rather than via
                 # _shutdown_shared, which would have already cleared
@@ -1897,10 +1945,7 @@ class Hp7StreamRelay:
             stop_event.set()
             # Unsubscribe from the shared broadcast.
             for q in (v_q, a_q, raw_q):
-                try:
-                    q.put_nowait(None)
-                except queue.Full:
-                    pass
+                _put_sentinel(q)
             for qs, q in (
                 (self._sub_v_qs, v_q),
                 (self._sub_a_qs, a_q),
