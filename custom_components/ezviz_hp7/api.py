@@ -523,6 +523,11 @@ class Hp7Api:
             return value
         return None
 
+    # Channel used for ChimeMusic writes. HP7: 1. HP5 family: 0 (set from
+    # __init__ after model detection; the cloud returns 200 on channel 1 but
+    # the monitor only applies writes on channel 0).
+    chime_write_channel: int = 1
+
     def _set_chime_fields(self, serial: str, **fields: int) -> bool:
         """Patch one or more ChimeMusic fields, preserving the rest."""
         self.ensure_client()
@@ -533,7 +538,7 @@ class Hp7Api:
         value = json.dumps(config, separators=(",", ":"))
         url = (
             f"https://{self._url}/v3/devconfig/v1/keyValue"
-            f"/{serial}/1/op"
+            f"/{serial}/{self.chime_write_channel}/op"
         )
         params = {"key": "ChimeMusic", "value": value}
         try:
@@ -613,26 +618,13 @@ class Hp7Api:
             return None
 
     def set_chime_volume(self, serial: str, volume: int) -> bool:
-        """Set ChimeMusic volume (0-7), preserving other fields."""
-        self.ensure_client()
-        if not self._client:
-            return False
-        volume = max(0, min(7, int(volume)))
-        current = self._get_chime_config(serial) or {}
-        config = {**self._CHIME_DEFAULTS, **current, "volume": volume}
-        value = json.dumps(config, separators=(",", ":"))
-        url = (
-            f"https://{self._url}/v3/devconfig/v1/keyValue"
-            f"/{serial}/1/op"
-        )
-        params = {"key": "ChimeMusic", "value": value}
-        try:
-            resp = self._client._session.put(url, params=params, timeout=15)
-            resp.raise_for_status()
-            return True
-        except (RequestException, ValueError) as exc:
-            _LOGGER.error("EZVIZ HP7: set_chime_volume failed: %s", exc)
-            return False
+        """Set ChimeMusic volume (0-7), preserving other fields.
+
+        Routed through _set_chime_fields so the cached ChimeMusic blob is
+        invalidated; the previous standalone PUT left the 60 s cache stale,
+        so the slider snapped back to the old value until the cache expired.
+        """
+        return self._set_chime_fields(serial, volume=max(0, min(7, int(volume))))
 
     # ------------------------------------------------------------------
     # DND / Privacy / Defence — wrappers around pylocalapi calls
@@ -642,6 +634,24 @@ class Hp7Api:
     _PRIVACY_SWITCH_TYPE = 7
     # SwitchType.CHIME_INDICATOR_LIGHT (HP7 doorbell label/name LED) = 611.
     _LABEL_LIGHT_SWITCH_TYPE = 611
+    # SwitchType.OUTDOOR_RINGING_SOUND = 39: the outdoor unit's "Doorbell
+    # Ring Sound" toggle on HP5/HPD5 (confirmed by diffing the pagelist
+    # while flipping it in the app; the app writes it on channel 0).
+    _RING_SOUND_SWITCH_TYPE = 39
+
+    def set_ring_sound(self, serial: str, enable: bool) -> bool:
+        """Toggle the outdoor unit's ring sound via SWITCH 39 (HP5 family)."""
+        self.ensure_client()
+        if not self._client:
+            return False
+        try:
+            self._client.switch_status(
+                serial, self._RING_SOUND_SWITCH_TYPE, bool(enable), channel_no=0
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: ring sound switch 39 failed: %s", exc)
+            return False
 
     def set_dnd(self, serial: str, enable: bool) -> bool:
         """Toggle Do-Not-Disturb on the device."""
@@ -1185,6 +1195,10 @@ class Hp7Api:
                     coerced = self._coerce_bool(sw.get("enable"))
                     if coerced is not None:
                         out["label_light_on"] = coerced
+                elif s_type == self._RING_SOUND_SWITCH_TYPE:
+                    coerced = self._coerce_bool(sw.get("enable"))
+                    if coerced is not None:
+                        out["ring_sound_on"] = coerced
 
         # HPD7 name-plate LED lives in the IoT FEATURE tree, not SWITCH 611
         # (#34): FEATURE_INFO["1"]["LightCtrl"]["NightLightEnable"]. When

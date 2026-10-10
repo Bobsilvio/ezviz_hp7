@@ -9,6 +9,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .device_info import is_hp5_family
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,12 +26,19 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities: list[SwitchEntity] = []
 
     # Camera-side switches.
-    entities.append(EzvizHp7ChimeSwitch(coordinator, api, serial, model=model))
+    hp5 = is_hp5_family(model)
+    if hp5:
+        # HP5/HPD5: the outdoor ring sound is SWITCH 39, not ChimeMusic, and
+        # the composite serial's ChimeMusic is inert, so no PIR-chime switch.
+        entities.append(EzvizHp7RingSoundSwitch(coordinator, api, serial, model=model))
+    else:
+        entities.append(EzvizHp7ChimeSwitch(coordinator, api, serial, model=model))
     entities.append(EzvizHp7DndSwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7PrivacySwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7DefenceSwitch(coordinator, api, serial, model))
     entities.append(EzvizHp7LabelLightSwitch(coordinator, api, serial, model))
-    entities.append(EzvizHp7ChimePirSwitch(coordinator, api, serial, model=model))
+    if not hp5:
+        entities.append(EzvizHp7ChimePirSwitch(coordinator, api, serial, model=model))
 
     # Per-monitor switches (multi-monitor for HP7 bifamigliare).
     monitors: list[str] = []
@@ -56,6 +64,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 model=f"{model} Monitor",
             )
         )
+        if hp5:
+            # No motion-alert chime on HP5 monitors (not in the app, field inert).
+            continue
         entities.append(
             EzvizHp7ChimePirSwitch(
                 coordinator,
@@ -249,6 +260,55 @@ class EzvizHp7LabelLightSwitch(_BaseHp7Switch):
 
     async def async_turn_off(self, **kwargs) -> None:
         await self._async_apply(self._api.set_label_light, False)
+
+
+class EzvizHp7RingSoundSwitch(_OptimisticStateMixin, CoordinatorEntity, SwitchEntity):
+    """Outdoor unit "Doorbell Ring Sound" (SWITCH type 39) on HP5/HPD5.
+
+    Reuses the ``chime_sound`` translation key / unique_id so an existing
+    Doorbell Chime entity on an HP5 keeps its entity_id and history.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, api, serial: str, *, model: str = "HP5") -> None:
+        super().__init__(coordinator)
+        self._api = api
+        self._serial = serial
+        self._model = model
+        self._attr_translation_key = "chime_sound"
+        self._attr_unique_id = f"{DOMAIN}_{serial}_chime_sound"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        from .device_info import make_device_info
+        return make_device_info(self._serial, self._model)
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        return super().available and "ring_sound_on" in data
+
+    @property
+    def is_on(self) -> bool | None:
+        data = self.coordinator.data or {}
+        return self._shield_stale(data.get("ring_sound_on"))
+
+    async def async_turn_on(self, **kwargs) -> None:
+        ok = await self.hass.async_add_executor_job(
+            self._api.set_ring_sound, self._serial, True
+        )
+        if ok:
+            self._mark_optimistic(True)
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        ok = await self.hass.async_add_executor_job(
+            self._api.set_ring_sound, self._serial, False
+        )
+        if ok:
+            self._mark_optimistic(False)
+        await self.coordinator.async_request_refresh()
 
 
 class EzvizHp7ChimePirSwitch(_OptimisticStateMixin, CoordinatorEntity, SwitchEntity):

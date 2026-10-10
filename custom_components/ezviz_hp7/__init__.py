@@ -171,6 +171,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Model detection failed (%s): %s", serial, exc)
         model = DEFAULT_MODEL
 
+    # HP5/HPD5 composite serials are MONITOR-DOORBELL (the monitor is the
+    # cloud parent, see resourceInfos.superDeviceSerial). If no monitor was
+    # configured, default to the part before the dash so the monitor-side
+    # chime/volume/ringtone entities are created out of the box.
+    from .device_info import HP5_CHIME_WRITE_CHANNEL, is_hp5_family
+    if is_hp5_family(model):
+        api.chime_write_channel = HP5_CHIME_WRITE_CHANNEL
+    if not monitor_serial and "-" in serial:
+        if is_hp5_family(model):
+            monitor_serial = [serial.split("-", 1)[0]]
+            _LOGGER.info(
+                "EZVIZ HP7: %s model %s, defaulting monitor serial to %s",
+                serial, model, monitor_serial[0],
+            )
+
     coordinator = Hp7Coordinator(
         hass, api, serial, monitor_serial, config_entry=entry
     )
