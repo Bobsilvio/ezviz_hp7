@@ -1745,8 +1745,15 @@ class Hp7StreamRelay:
                     # ("Could not find codec parameters ... unspecified size",
                     # #39 HPD7). A large analyzeduration/probesize is a ceiling,
                     # not a fixed wait — it starts as soon as params are known.
+                    # EXCEPT on this input: the PS also carries the
+                    # mislabelled MP2 audio track, whose parameters ffmpeg
+                    # can never determine, so it always probes until the
+                    # analyzeduration ceiling. Measured on an HP7 (H.264,
+                    # fw 5.3.6): first keyframe 0.3 s after PLAY, yet the
+                    # second input was only opened 10.5 s later. The GOP
+                    # cache replays from an IDR, so 1.5 s is ample headroom.
                     "-fflags", "+genpts", "-flags", "low_delay",
-                    "-analyzeduration", "10000000", "-probesize", "10000000",
+                    "-analyzeduration", "1500000", "-probesize", "10000000",
                     # NO wall-clock re-timestamping on this input. It is a
                     # real MPEG-PS container that already carries correct
                     # timestamps; stamping by arrival instead collapses the

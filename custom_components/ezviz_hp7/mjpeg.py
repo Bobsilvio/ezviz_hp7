@@ -59,11 +59,16 @@ def _build_ffmpeg_cmd(
     analyzeduration to 0, so ffmpeg gives up before the first keyframe.
     These are a *ceiling*, not a fixed wait — ffmpeg starts emitting as
     soon as it has decoded the parameter sets.
+
+    In practice the ceiling IS hit on the relay's MPEG-TS: measured on an
+    HP7 (H.264, LAN source) the first JPEG left 7.3 s after the relay's
+    first byte. The relay output always starts on an IDR with its parameter
+    sets (GOP cache / decoder sync), so 1.5 s is still ample.
     """
     return [
         ffmpeg_path,
         "-loglevel", "warning",
-        "-analyzeduration", "10000000",
+        "-analyzeduration", "1500000",
         "-probesize", "10000000",
         "-f", "mpegts",
         "-fflags", "+discardcorrupt",
