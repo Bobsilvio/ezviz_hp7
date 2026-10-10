@@ -1093,7 +1093,14 @@ class Hp7Api:
 
         nodisturb = info.get("NODISTURB") or {}
         if isinstance(nodisturb, dict):
+            # HP7 (fw 5.3.6) has no "enable" here, only
+            # {"alarmEnable": 0|1, "callingEnable": 0|1}, and the PUT sent by
+            # set_dnd flips alarmEnable. Without this fallback dnd_on is never
+            # set and the switch drops to unknown once the optimistic window
+            # after a toggle runs out.
             enable = nodisturb.get("enable")
+            if enable is None:
+                enable = nodisturb.get("alarmEnable")
             coerced = self._coerce_bool(enable)
             if coerced is not None:
                 out["dnd_on"] = coerced
