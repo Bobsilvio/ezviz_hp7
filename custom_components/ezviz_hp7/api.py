@@ -124,6 +124,10 @@ class Hp7Api:
 
             if not self._token:
                 self._login_and_store_token()
+        except EzvizAuthVerificationCode:
+            # Let the config flow catch this and show the SMS step.
+            self._client = None
+            raise
         except Exception as exc:
             _LOGGER.error("Failed to initialize EzvizClient: %s", exc)
             raise RuntimeError(f"Failed to initialize EZVIZ client: {exc}") from exc
