@@ -199,6 +199,52 @@ VIDEO_STREAM_ID = 0xE0
 AUDIO_STREAM_ID = 0xC0
 
 FFMPEG_KILL_TIMEOUT = 2.0
+# The relay port speaks raw TCP (MPEG-TS from the first byte) and HTTP (a 200
+# response, then the same bytes). HA gets the http:// form as stream source:
+# go2rtc's tcp:// source never records its URL on the live connection, so
+# while a viewer is attached go2rtc lists this camera's producer without
+# "url", and HA's go2rtc client, which requires that field, fails the whole
+# stream list: every go2rtc request in HA fails meanwhile (other cameras'
+# stills, WebRTC offers). go2rtc's http:// source records it.
+HTTP_REQUEST_TIMEOUT = 5.0
+_HTTP_OK = (
+    b"HTTP/1.1 200 OK\r\n"
+    b"Content-Type: video/mp2t\r\n"
+    b"Cache-Control: no-cache\r\n"
+    b"Connection: close\r\n\r\n"
+)
+
+
+class _ClientProtocolSniffer:
+    """Tells an HTTP client from a raw TCP one, delaying neither.
+
+    An HTTP client sends its request as soon as it connects; a viewer's first
+    output comes only after the per-viewer ffmpeg has probed its input, so by
+    then the request has arrived or never will.
+    """
+
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        self._task = asyncio.ensure_future(self._read(reader))
+
+    @staticmethod
+    async def _read(reader: asyncio.StreamReader) -> bytes:
+        try:
+            return await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"), timeout=HTTP_REQUEST_TIMEOUT
+            )
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError, OSError):
+            return b""
+
+    def preamble(self) -> bytes:
+        """What to send before the stream: a 200 header for a GET, else nothing."""
+        if not self._task.done() or self._task.cancelled():
+            return b""
+        request = self._task.result()
+        return _HTTP_OK if request.startswith(b"GET ") else b""
+
+    def close(self) -> None:
+        self._task.cancel()
 RELAY_CHUNK = 65536
 PAYLOAD_QUEUE_SIZE = 256
 # Video carries whole MPEG-PS chunks and cannot tolerate gaps the way audio
@@ -723,6 +769,12 @@ class Hp7StreamRelay:
     @property
     def stream_url(self) -> str:
         return f"tcp://127.0.0.1:{self._port}"
+
+    @property
+    def http_url(self) -> str:
+        """The same stream over HTTP; what HA gets as stream source (see
+        HTTP_REQUEST_TIMEOUT)."""
+        return f"http://127.0.0.1:{self._port}/stream.ts"
 
     @property
     def detected_codec(self) -> Optional[str]:
@@ -1646,6 +1698,8 @@ class Hp7StreamRelay:
                 pass
             return
 
+        sniffer = _ClientProtocolSniffer(reader)
+
         # Subscribe to the broadcast. LAN serves one muxed MPEG-PS feed;
         # cloud serves split video/audio PES streams.
         lan = self._active_lan
@@ -1930,6 +1984,10 @@ class Hp7StreamRelay:
                     break
                 if not data:
                     break
+                if not got_output:
+                    preamble = sniffer.preamble()
+                    if preamble:
+                        writer.write(preamble)
                 got_output = True
                 try:
                     writer.write(data)
@@ -1942,6 +2000,7 @@ class Hp7StreamRelay:
                 self._serial, exc,
             )
         finally:
+            sniffer.close()
             stop_event.set()
             # Unsubscribe from the shared broadcast.
             for q in (v_q, a_q, raw_q):
@@ -2051,7 +2110,7 @@ class Hp7LiveCamera(Camera):
             return None
         if self._relay.port == 0:
             return None
-        return self._relay.stream_url
+        return self._relay.http_url
 
     async def handle_async_mjpeg_stream(self, request):
         """Serve a per-viewer MJPEG transcode of the live stream.
