@@ -22,24 +22,21 @@ DEFAULT_MODEL = "HP7"
 _KNOWN_MODELS = ("HP7", "CP7", "HP4", "DP1", "DP2")
 
 
-def detect_model(api: Any, serial: str) -> str:
-    """Best-effort lookup of the device model label (e.g. "HP7", "CP7").
+DEVICE_CATEGORY_CATEYE = "CatEye"
 
-    Reads the cloud pagelist via the EzvizClient and walks the deviceInfos
-    fields. Falls back to DEFAULT_MODEL on any error so setup never blocks
-    on model detection.
+
+def is_cateye(category: str | None) -> bool:
+    """True for EZVIZ peephole viewers (deviceCategory "CatEye", e.g. CP2).
+
+    Battery cameras with a lens and an indoor screen: no doorbell button,
+    lock relays, chime or PIR. They get their own entity set (no doorbell
+    entities), cloud-only polling and a live view that only opens a cloud
+    session while someone is watching.
     """
-    try:
-        api.ensure_client()
-        client = getattr(api, "_client", None)
-        if client is None:
-            return DEFAULT_MODEL
-        info = client.get_device_infos(serial)
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug("Model detection skipped (%s): %s", serial, exc)
-        return DEFAULT_MODEL
+    return bool(category) and str(category).strip().lower() == "cateye"
 
-    device_infos = (info or {}).get("deviceInfos") or {}
+
+def _model_from_device_infos(device_infos: dict[str, Any]) -> str:
     candidates = [
         device_infos.get("deviceSubCategory"),
         device_infos.get("deviceCategory"),
@@ -58,6 +55,35 @@ def detect_model(api: Any, serial: str) -> str:
         if 2 <= len(token) <= 8 and any(c.isdigit() for c in token):
             return token
     return DEFAULT_MODEL
+
+
+def detect_model_and_category(api: Any, serial: str) -> tuple[str, str | None]:
+    """Best-effort lookup of the model label and the cloud deviceCategory.
+
+    Reads the cloud pagelist via the EzvizClient. Falls back to
+    (DEFAULT_MODEL, None) on any error so setup never blocks on detection.
+    """
+    try:
+        api.ensure_client()
+        client = getattr(api, "_client", None)
+        if client is None:
+            return DEFAULT_MODEL, None
+        info = client.get_device_infos(serial)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Model detection skipped (%s): %s", serial, exc)
+        return DEFAULT_MODEL, None
+
+    device_infos = (info or {}).get("deviceInfos") or {}
+    category = device_infos.get("deviceCategory")
+    return (
+        _model_from_device_infos(device_infos),
+        category if isinstance(category, str) else None,
+    )
+
+
+def detect_model(api: Any, serial: str) -> str:
+    """Best-effort lookup of the device model label (e.g. "HP7", "CP7")."""
+    return detect_model_and_category(api, serial)[0]
 
 
 def make_device_info(serial: str, model: Optional[str]) -> DeviceInfo:

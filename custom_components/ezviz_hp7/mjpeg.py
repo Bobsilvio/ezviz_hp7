@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Callable
 
 from aiohttp import web
 
@@ -42,6 +43,8 @@ def _build_ffmpeg_cmd(
     width: int,
     height: int,
     quality: int,
+    analyzeduration: int = 10000000,
+    probesize: int = 10000000,
 ) -> list[str]:
     """ffmpeg that reads the relay's MPEG-TS, drops audio, decodes the
     video (H.264 or HEVC) and emits multipart MJPEG to stdout.
@@ -63,8 +66,8 @@ def _build_ffmpeg_cmd(
     return [
         ffmpeg_path,
         "-loglevel", "warning",
-        "-analyzeduration", "10000000",
-        "-probesize", "10000000",
+        "-analyzeduration", str(analyzeduration),
+        "-probesize", str(probesize),
         "-f", "mpegts",
         "-fflags", "+discardcorrupt",
         "-i", upstream_url,
@@ -87,6 +90,9 @@ async def serve_mjpeg(
     width: int = 1280,
     height: int = 720,
     quality: int = 5,
+    on_frame: Callable[[bytes], None] | None = None,
+    analyzeduration: int = 10000000,
+    probesize: int = 10000000,
 ) -> web.StreamResponse:
     """Stream a continuous MJPEG response back to the HTTP client.
 
@@ -96,6 +102,7 @@ async def serve_mjpeg(
     cmd = _build_ffmpeg_cmd(
         ffmpeg_path, upstream_url,
         fps=fps, width=width, height=height, quality=quality,
+        analyzeduration=analyzeduration, probesize=probesize,
     )
     started_at = time.monotonic()
     peer = request.remote
@@ -124,6 +131,7 @@ async def serve_mjpeg(
 
     stderr_task = asyncio.create_task(_drain_stderr(proc))
     state = _SessionState()
+    state.on_frame = on_frame
     reader_task = asyncio.create_task(_read_frames(proc, state))
     try:
         await _write_frames(response, state)
@@ -177,6 +185,10 @@ class _SessionState:
         self.frames_dropped = 0
         self.blocked_s = 0.0
         self.end_reason = "ok"
+        # Optional hook handed every frame actually sent to the viewer (one
+        # multipart part: boundary, headers, JPEG). Used to keep the last
+        # frame of a session as the camera's still image.
+        self.on_frame: Callable[[bytes], None] | None = None
 
 
 async def _read_frames(
@@ -234,6 +246,11 @@ async def _write_frames(response: web.StreamResponse, state: _SessionState) -> N
             state.blocked_s += time.monotonic() - t0
             state.total_bytes += len(frame)
             state.frames_sent += 1
+            if state.on_frame is not None:
+                try:
+                    state.on_frame(frame)
+                except Exception:  # noqa: BLE001
+                    pass
         if state.eof and state.latest is None:
             state.end_reason = "ffmpeg_eof"
             return

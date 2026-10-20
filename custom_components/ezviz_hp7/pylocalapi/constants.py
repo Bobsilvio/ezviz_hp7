@@ -7,6 +7,8 @@ the Ezviz API to descriptive names.
 
 from enum import Enum, StrEnum, unique
 from hashlib import md5
+from pathlib import Path
+import re
 import uuid
 
 
@@ -18,7 +20,35 @@ def _generate_unique_code() -> str:
     return md5(mac_str.encode("utf-8")).hexdigest()
 
 
-FEATURE_CODE = _generate_unique_code()
+def _stable_feature_code() -> str:
+    """Feature code that identifies this Home Assistant to EZVIZ as one terminal.
+
+    EZVIZ lists every login under "Terminal management", keyed by this code.
+    uuid.getnode() is only stable when the MAC address can be read: inside a
+    container it may fall back to a random value, and the MAC can change with
+    the host's network setup, so a restart or a re-added entry showed up as a
+    new "Hassio" terminal and left the old one stale. The first value is
+    therefore stored next to Home Assistant's own state (.storage) and reused
+    from then on. Outside a Home Assistant config dir, the MAC-based value is
+    used as before.
+    """
+    try:
+        storage = Path(__file__).resolve().parents[3] / ".storage"
+        if storage.is_dir():
+            path = storage / "ezviz_hp7.feature_code"
+            if path.is_file():
+                code = path.read_text(encoding="utf-8").strip()
+                if re.fullmatch(r"[0-9a-f]{32}", code):
+                    return code
+            code = _generate_unique_code()
+            path.write_text(code, encoding="utf-8")
+            return code
+    except OSError:
+        pass
+    return _generate_unique_code()
+
+
+FEATURE_CODE = _stable_feature_code()
 XOR_KEY = b"\x0c\x0eJ^X\x15@Rr"
 DEFAULT_TIMEOUT = 25
 MAX_RETRIES = 3

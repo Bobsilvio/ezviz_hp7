@@ -93,6 +93,15 @@
       },
       "mic_volume": {
         "name": "Volume Microphone"
+      },
+      "battery_status": {
+        "name": "Battery status"
+      },
+      "last_offline": {
+        "name": "Last offline"
+      },
+      "privacy_areas": {
+        "name": "Privacy mask areas"
       }
     },
     "binary_sensor": {
@@ -140,6 +149,9 @@
       },
       "feature_human_detection": {
         "name": "Détection Humaine"
+      },
+      "encryption": {
+        "name": "Video encryption"
       }
     },
     "button": {
@@ -174,6 +186,18 @@
       },
       "chime_pir_monitor": {
         "name": "Alerte Mouvement Moniteur"
+      },
+      "offline_notify": {
+        "name": "Offline notification"
+      },
+      "logo_watermark": {
+        "name": "Logo watermark"
+      },
+      "peak_protection": {
+        "name": "Intelligent peak protection"
+      },
+      "distortion_correction": {
+        "name": "Distortion correction"
       }
     },
     "camera": {
@@ -182,6 +206,9 @@
       },
       "live": {
         "name": "Direct"
+      },
+      "live_sub": {
+        "name": "En direct (sub-stream)"
       }
     },
     "number": {
@@ -202,6 +229,33 @@
       },
       "chime_pir_ringtone_monitor": {
         "name": "Sonnerie Mouvement Moniteur"
+      },
+      "screen_brightness": {
+        "name": "Screen brightness"
+      }
+    },
+    "select": {
+      "screen_timeout": {
+        "name": "Screen auto-lock",
+        "state": {
+          "10": "10 s",
+          "15": "15 s",
+          "20": "20 s",
+          "25": "25 s",
+          "30": "30 s"
+        }
+      },
+      "wifi_sleep_mode": {
+        "name": "Wi-Fi sleep mode",
+        "state": {
+          "low_power": "Low power",
+          "ultra_low_power": "Ultra low power"
+        }
+      }
+    },
+    "text": {
+      "osd_text": {
+        "name": "OSD text"
       }
     }
   },
@@ -240,9 +294,12 @@
           "video_codec": "Codec vidéo (auto = détection ; hevc transcode le H.265 en H.264 pour WebRTC ; hevc_copy laisse passer le H.265 tel quel pour hôtes peu puissants / Frigate / Safari)",
           "stream_source": "Source du flux (cloud = relais VTM EZVIZ ; local = LAN directe, contourne le cloud et corrige 'pas de direct' sur les firmwares qui n'émettent pas vers le cloud — nécessite HA sur le même réseau que le portier ; auto = essaie local puis cloud)",
           "stream_mode": "Mode de diffusion (auto = par défaut : détecte le codec et choisit tout seul — H.264 → webrtc, HEVC → mjpeg ; webrtc = HA Stream/go2rtc, avec audio + faible latence mais n'affiche pas le HEVC sans transcodage ; mjpeg = ffmpeg par spectateur en motion-JPEG, agnostique au codec et robuste pour HEVC/multi-spectateur mais sans audio)",
-          "stream_quality": "Qualité du flux LAN (main = pleine résolution ; sub = flux secondaire basse résolution de l'appareil, bien moins coûteux à décoder — à utiliser si la vidéo accumule du retard sur un hôte peu puissant comme un Raspberry Pi. Uniquement pour la source « local »)",
+          "stream_quality": "Qualité du flux (main = pleine résolution ; sub = flux secondaire basse résolution de l'appareil, bien moins coûteux à décoder — à utiliser si la vidéo accumule du retard sur un hôte peu puissant comme un Raspberry Pi. S'applique à la source locale et au cloud)",
           "encryption_key": "Clé de chiffrement (le code de vérification à 6 caractères de l'appareil, sur son étiquette). Nécessaire uniquement si le portier chiffre la vidéo et que le cloud ne fournit pas la clé : elle sert alors à déchiffrer le flux, pour avoir le direct sans désactiver le chiffrement.",
-          "diagnostic_dumps": "Vidages de diagnostic (écrit deux fichiers .bin dans /config capturant le début du flux, pour analyse lors d'un signalement de problème vidéo. Laissez sur OFF : inutile en usage normal)"
+          "diagnostic_dumps": "Vidages de diagnostic (écrit deux fichiers .bin dans /config capturant le début du flux, pour analyse lors d'un signalement de problème vidéo. Laissez sur OFF : inutile en usage normal)",
+          "silent_audio": "Ajouter une piste audio silencieuse (les judas n'ont pas de micro ; l'app Google Home sur Android a besoin d'une piste audio pour lire la caméra en WebRTC)",
+          "sub_stream_camera": "Créer aussi une caméra sub-stream (une seconde caméra en direct qui utilise toujours le flux secondaire basse résolution de l'appareil, p. ex. pour le casting ou Google Home ; la caméra principale garde la qualité ci-dessus)",
+          "sub_stream_mode": "Diffusion de la caméra sub-stream (same = comme la caméra principale ; ou webrtc / mjpeg pour cette caméra uniquement)"
         }
       }
     }

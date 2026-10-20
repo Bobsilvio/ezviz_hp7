@@ -16,6 +16,35 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EZVIZ HP7/CP7 number entities."""
     data = hass.data[DOMAIN][entry.entry_id]
+    if data.get("cateye"):
+        # Peephole viewer: only the panel brightness, no chime numbers.
+        from homeassistant.components.number import NumberMode
+
+        from .cateye import CatEyeSettingEntity
+
+        class CatEyeScreenBrightness(CatEyeSettingEntity, NumberEntity):
+            _attr_native_min_value = 1
+            _attr_native_max_value = 15
+            _attr_native_step = 1
+            _attr_mode = NumberMode.SLIDER
+
+            @property
+            def native_value(self) -> float | None:
+                value = self._current()
+                return None if value is None else float(value)
+
+            async def async_set_native_value(self, value: float) -> None:
+                await self._async_write(int(round(value)))
+
+        async_add_entities(
+            [
+                CatEyeScreenBrightness(
+                    data["coordinator"], data["api"], data["serial"],
+                    data.get("model") or "CP2", "screen_brightness", "mdi:brightness-6",
+                )
+            ]
+        )
+        return
     api = data["api"]
     serial = data["serial"]
     monitor_serial = data.get("monitor_serial")

@@ -12,7 +12,7 @@
       },
       "pick_serial": {
         "title": "Seleziona dispositivo",
-        "description": "Scegli il serial del tuo HP7 / CP7.",
+        "description": "Scegli il dispositivo EZVIZ da aggiungere (citofoni HP7 / CP7 / HP5, spioncino CP2).",
         "data": {
           "serial": "Numero di serie"
         }
@@ -93,6 +93,15 @@
       },
       "mic_volume": {
         "name": "Volume Microfono"
+      },
+      "battery_status": {
+        "name": "Stato batteria"
+      },
+      "last_offline": {
+        "name": "Ultima disconnessione"
+      },
+      "privacy_areas": {
+        "name": "Aree maschera privacy"
       }
     },
     "binary_sensor": {
@@ -140,6 +149,9 @@
       },
       "feature_human_detection": {
         "name": "Rilevamento Persone"
+      },
+      "encryption": {
+        "name": "Crittografia video"
       }
     },
     "button": {
@@ -174,6 +186,18 @@
       },
       "chime_pir_monitor": {
         "name": "Allerta Movimento Monitor"
+      },
+      "offline_notify": {
+        "name": "Notifica offline"
+      },
+      "logo_watermark": {
+        "name": "Filigrana logo"
+      },
+      "peak_protection": {
+        "name": "Protezione picco intelligente"
+      },
+      "distortion_correction": {
+        "name": "Correzione distorsione"
       }
     },
     "camera": {
@@ -182,6 +206,9 @@
       },
       "live": {
         "name": "Live"
+      },
+      "live_sub": {
+        "name": "Live (sub-stream)"
       }
     },
     "number": {
@@ -202,6 +229,33 @@
       },
       "chime_pir_ringtone_monitor": {
         "name": "Suoneria Movimento Monitor"
+      },
+      "screen_brightness": {
+        "name": "Luminosità schermo"
+      }
+    },
+    "select": {
+      "screen_timeout": {
+        "name": "Blocco automatico schermo",
+        "state": {
+          "10": "10 s",
+          "15": "15 s",
+          "20": "20 s",
+          "25": "25 s",
+          "30": "30 s"
+        }
+      },
+      "wifi_sleep_mode": {
+        "name": "Modalità sospensione Wi-Fi",
+        "state": {
+          "low_power": "Basso consumo",
+          "ultra_low_power": "Consumo ultra ridotto"
+        }
+      }
+    },
+    "text": {
+      "osd_text": {
+        "name": "Testo OSD"
       }
     }
   },
@@ -240,9 +294,12 @@
           "video_codec": "Codec video (auto = rileva; hevc transcodifica H.265 in H.264 per WebRTC; hevc_copy passa H.265 inalterato per host deboli / Frigate / Safari)",
           "stream_source": "Sorgente stream (cloud = relay VTM EZVIZ; local = LAN diretta, bypassa il cloud e risolve 'live assente' sui firmware che non pushano al cloud — richiede HA sulla stessa rete del citofono; auto = prova local poi cloud)",
           "stream_mode": "Modalità live (auto = default: rileva il codec e sceglie da solo — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, con audio + bassa latenza ma non mostra HEVC senza transcodifica; mjpeg = ffmpeg per-viewer in motion-JPEG, codec-agnostico e robusto per HEVC/multi-viewer ma senza audio)",
-          "stream_quality": "Qualità stream LAN (main = piena risoluzione; sub = flusso a bassa risoluzione del dispositivo, molto più leggero da decodificare — usalo se il video accumula ritardo su host deboli tipo Raspberry. Solo sorgente 'local')",
+          "stream_quality": "Qualità stream (main = piena risoluzione; sub = flusso a bassa risoluzione del dispositivo, molto più leggero da decodificare — usalo se il video accumula ritardo su host deboli tipo Raspberry. Vale sia per la sorgente locale sia per il cloud)",
           "encryption_key": "Chiave di crittografia (il codice di verifica a 6 caratteri del dispositivo, stampato sull'etichetta). Serve solo se il citofono cifra il video e il cloud non rilascia la chiave: viene usata per decifrare il flusso, così il live funziona senza dover disattivare la crittografia.",
-          "diagnostic_dumps": "Dump diagnostici (scrive due file .bin in /config con l'inizio dello stream, solo per analisi quando segnali un problema video. Lascia OFF: sono inutili nell'uso normale)"
+          "diagnostic_dumps": "Dump diagnostici (scrive due file .bin in /config con l'inizio dello stream, solo per analisi quando segnali un problema video. Lascia OFF: sono inutili nell'uso normale)",
+          "silent_audio": "Aggiungi una traccia audio silenziosa (gli spioncini non hanno microfono; l'app Google Home su Android richiede una traccia audio per riprodurre la camera via WebRTC)",
+          "sub_stream_camera": "Crea anche una camera sub-stream (una seconda camera live che usa sempre il substream a bassa risoluzione del dispositivo, ad es. per il casting o Google Home; la camera principale mantiene la qualità impostata sopra)",
+          "sub_stream_mode": "Consegna della camera sub-stream (same = come la camera principale; oppure webrtc / mjpeg solo per questa camera)"
         }
       }
     }

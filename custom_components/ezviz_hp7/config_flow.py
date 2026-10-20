@@ -30,7 +30,12 @@ from .const import (
     STREAM_MODES,
     CONF_DIAGNOSTIC_DUMPS,
     CONF_ENCRYPTION_KEY,
+    CONF_SILENT_AUDIO,
     CONF_STREAM_QUALITY,
+    CONF_SUB_CAMERA,
+    CONF_SUB_STREAM_MODE,
+    SUB_STREAM_MODE_SAME,
+    SUB_STREAM_MODES,
     STREAM_QUALITY_MAIN,
     STREAM_QUALITIES,
 )
@@ -95,6 +100,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._cached_creds: dict[str, Any] | None = None
         self._device_options: dict[str, str] | None = None
         self._serial_to_unique: dict[str, str] | None = None
+        self._serial_to_model: dict[str, str] = {}
         self._pending_api: Hp7Api | None = None  # set during 2FA flow
 
     async def async_step_user(
@@ -164,6 +170,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         options: dict[str, str] = {}
         serial_to_unique: dict[str, str] = {}
+        serial_to_model: dict[str, str] = {}
+        configured = self._async_current_ids()
+
+        from .device_info import is_cateye
 
         for serial_key, info in (devices or {}).items():
             name = (info.get("name") or info.get("device_name") or "Device").strip()
@@ -174,7 +184,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 or info.get("full_serial")
                 or None
             )
-            if _looks_like_long_serial(serial_key):
+            if _looks_like_long_serial(serial_key) or is_cateye(info.get("category")):
+                # Intercoms are addressed by their composite MONITOR-CAMERA
+                # serial (their bare part serials are hidden on purpose);
+                # peephole viewers are a single device with a plain serial.
                 shown_serial = serial_key
             else:
                 shown_serial = (
@@ -185,14 +198,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             unique_id = api_unique or shown_serial
             if shown_serial in options or unique_id in serial_to_unique.values():
                 continue
-            options[shown_serial] = f"{name} ({shown_serial})"
+            if unique_id in configured or shown_serial in configured:
+                continue  # already set up: don't offer it again
+            model = info.get("model")
+            options[shown_serial] = f"{name} - {model} ({shown_serial})" if model else f"{name} ({shown_serial})"
             serial_to_unique[shown_serial] = unique_id
+            if model:
+                serial_to_model[shown_serial] = model
 
         self._cached_creds = user_input
 
         if options:
             self._device_options = options
             self._serial_to_unique = serial_to_unique
+            self._serial_to_model = serial_to_model
             return await self.async_step_pick_serial()
         return await self.async_step_enter_serial()
 
@@ -280,7 +299,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         data = {**(self._cached_creds or {}), CONF_SERIAL: serial}
-        title = f"EZVIZ HP7 ({serial})"
+        title = f"EZVIZ {self._serial_to_model.get(serial) or 'HP7'} ({serial})"
         return self.async_create_entry(title=title, data=data)
 
     async def async_step_enter_serial(
@@ -356,11 +375,21 @@ class OptionsFlow(config_entries.OptionsFlow):
             ).lower()
             if quality not in STREAM_QUALITIES:
                 quality = STREAM_QUALITY_MAIN
+            sub_camera = bool(user_input.get(CONF_SUB_CAMERA, False))
+            sub_mode = str(
+                user_input.get(CONF_SUB_STREAM_MODE) or SUB_STREAM_MODE_SAME
+            ).lower()
+            if sub_mode not in SUB_STREAM_MODES:
+                sub_mode = SUB_STREAM_MODE_SAME
             dumps = bool(user_input.get(CONF_DIAGNOSTIC_DUMPS, False))
             enc_key = str(user_input.get(CONF_ENCRYPTION_KEY) or "").strip()
+            extra = {}
+            if CONF_SILENT_AUDIO in user_input:  # shown for CatEye entries only
+                extra[CONF_SILENT_AUDIO] = bool(user_input[CONF_SILENT_AUDIO])
             return self.async_create_entry(
                 title="",
                 data={
+                    **extra,
                     CONF_MONITOR_SERIAL: monitor,
                     CONF_RELAY_PORT: relay_port,
                     CONF_RELAY_BIND: relay_bind,
@@ -369,6 +398,8 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_STREAM_SOURCE: source,
                     CONF_STREAM_MODE: mode,
                     CONF_STREAM_QUALITY: quality,
+                    CONF_SUB_CAMERA: sub_camera,
+                    CONF_SUB_STREAM_MODE: sub_mode,
                     CONF_DIAGNOSTIC_DUMPS: dumps,
                     CONF_ENCRYPTION_KEY: enc_key,
                 },
@@ -457,6 +488,21 @@ class OptionsFlow(config_entries.OptionsFlow):
         if current_quality not in STREAM_QUALITIES:
             current_quality = STREAM_QUALITY_MAIN
 
+        current_sub_camera = bool(
+            self.config_entry.options.get(
+                CONF_SUB_CAMERA, self.config_entry.data.get(CONF_SUB_CAMERA, False)
+            )
+        )
+        current_sub_mode = str(
+            self.config_entry.options.get(
+                CONF_SUB_STREAM_MODE,
+                self.config_entry.data.get(CONF_SUB_STREAM_MODE, SUB_STREAM_MODE_SAME),
+            )
+            or SUB_STREAM_MODE_SAME
+        ).lower()
+        if current_sub_mode not in SUB_STREAM_MODES:
+            current_sub_mode = SUB_STREAM_MODE_SAME
+
         current_enc_key = str(
             self.config_entry.options.get(
                 CONF_ENCRYPTION_KEY,
@@ -471,6 +517,26 @@ class OptionsFlow(config_entries.OptionsFlow):
             )
         )
 
+        # CatEye (peephole) entries: their stream is built without audio; offer
+        # the silent track. Known once the entry is set up (see __init__).
+        is_cateye = bool(
+            self.hass.data.get(DOMAIN, {})
+            .get(self.config_entry.entry_id, {})
+            .get("cateye")
+        )
+        cateye_fields = {}
+        if is_cateye:
+            cateye_fields[
+                vol.Optional(
+                    CONF_SILENT_AUDIO,
+                    default=bool(
+                        self.config_entry.options.get(
+                            CONF_SILENT_AUDIO,
+                            self.config_entry.data.get(CONF_SILENT_AUDIO, True),
+                        )
+                    ),
+                )
+            ] = bool
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MONITOR_SERIAL, default=current or ""): str,
@@ -493,6 +559,13 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_STREAM_QUALITY, default=current_quality
                 ): vol.In(STREAM_QUALITIES),
+                vol.Optional(
+                    CONF_SUB_CAMERA, default=current_sub_camera
+                ): bool,
+                **cateye_fields,
+                vol.Optional(
+                    CONF_SUB_STREAM_MODE, default=current_sub_mode
+                ): vol.In(SUB_STREAM_MODES),
                 vol.Optional(
                     CONF_ENCRYPTION_KEY, default=current_enc_key
                 ): str,

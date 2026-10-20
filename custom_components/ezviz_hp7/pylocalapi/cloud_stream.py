@@ -118,6 +118,7 @@ def get_cloud_stream_info(
     client_type: int = 9,
     token_index: int = 0,
     refresh_vtm: bool = False,
+    stream_type: int = 1,
 ) -> JsonDict:
     """Build VTM stream bootstrap metadata for a camera.
 
@@ -177,6 +178,7 @@ def get_cloud_stream_info(
         vtdu_token,
         channel=stream_channel,
         client_type=client_type,
+        stream_type=stream_type,
     )
     return {
         "resource": resource,
@@ -197,6 +199,7 @@ def open_cloud_stream(
     refresh_vtm: bool = True,
     timeout: float | None = 10.0,
     socket_factory: SocketFactory | None = None,
+    stream_type: int = 1,
 ) -> VtmStreamClient:
     """Return a VTM TCP client bootstrapped from EZVIZ cloud metadata.
 
@@ -211,6 +214,7 @@ def open_cloud_stream(
         client_type=client_type,
         token_index=token_index,
         refresh_vtm=refresh_vtm,
+        stream_type=stream_type,
     )
     if socket_factory is None:
         return VtmStreamClient(info["stream_url"], timeout=timeout)

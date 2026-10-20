@@ -84,6 +84,25 @@ SENSORS: list[tuple[str, str, SensorDeviceClass | None, str | None, str | None, 
 ]
 
 
+# Peephole viewers (CatEye, e.g. CP2): only what the device actually backs.
+# Same tuple layout as SENSORS. A None translation key lets the device class
+# name the entity (e.g. "Battery").
+CATEYE_SENSORS: list[tuple[str, str | None, SensorDeviceClass | None, str | None, str | None, Any]] = [
+    ("battery", None, SensorDeviceClass.BATTERY, "%", None, None),
+    ("battery_status", "battery_status", None, None, "mdi:battery-heart-variant", None),
+    ("name", "name", None, None, "mdi:label", None),
+    ("privacy_areas", "privacy_areas", None, None, "mdi:eye-off-outline", None),
+    ("last_offline", "last_offline", SensorDeviceClass.TIMESTAMP, None, "mdi:wifi-off", None),
+    ("version", "version", None, None, "mdi:update", None),
+    ("signal", "signal", None, "%", "mdi:wifi", None),
+    ("local_ip", "local_ip", None, None, "mdi:ip", None),
+    ("wan_ip", "wan_ip", None, None, "mdi:wan", None),
+]
+CATEYE_DIAGNOSTIC_KEYS = {
+    "name", "version", "signal", "local_ip", "wan_ip",
+}
+
+
 def _dig(data: dict[str, Any], path: str, default: Any = None) -> Any:
     """Recursively get value from nested dictionary.
     
@@ -117,6 +136,17 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     model: str = data.get("model") or "HP7"
 
     entities: list[Hp7Sensor] = []
+    if data.get("cateye"):
+        for cfg in CATEYE_SENSORS:
+            entity = Hp7Sensor(coordinator, serial, model, *cfg)
+            if cfg[0] in CATEYE_DIAGNOSTIC_KEYS:
+                # Diagnostic but enabled: a peephole has few entities and
+                # these are the ones worth seeing.
+                entity._attr_entity_category = EntityCategory.DIAGNOSTIC
+            entities.append(entity)
+        async_add_entities(entities)
+        return
+
     for cfg in SENSORS:
         entity = Hp7Sensor(coordinator, serial, model, *cfg)
         if cfg[0] in DIAGNOSTIC_KEYS:
@@ -148,7 +178,7 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
         serial: str,
         model: str,
         path: str,
-        translation_key: str,
+        translation_key: str | None,
         device_class: SensorDeviceClass | None,
         unit: str | None,
         icon: str | None,

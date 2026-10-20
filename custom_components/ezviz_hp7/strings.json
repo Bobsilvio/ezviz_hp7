@@ -12,7 +12,7 @@
       },
       "pick_serial": {
         "title": "Select Device",
-        "description": "Choose the serial number of your HP7 / CP7.",
+        "description": "Choose the EZVIZ device to add (HP7 / CP7 / HP5 intercoms, CP2 peephole).",
         "data": {
           "serial": "Serial Number"
         }
@@ -93,6 +93,15 @@
       },
       "mic_volume": {
         "name": "Microphone Volume"
+      },
+      "battery_status": {
+        "name": "Battery status"
+      },
+      "last_offline": {
+        "name": "Last offline"
+      },
+      "privacy_areas": {
+        "name": "Privacy mask areas"
       }
     },
     "binary_sensor": {
@@ -140,6 +149,9 @@
       },
       "feature_human_detection": {
         "name": "Human Detection"
+      },
+      "encryption": {
+        "name": "Video encryption"
       }
     },
     "button": {
@@ -174,6 +186,18 @@
       },
       "chime_pir_monitor": {
         "name": "Monitor Motion Sound Alert"
+      },
+      "offline_notify": {
+        "name": "Offline notification"
+      },
+      "logo_watermark": {
+        "name": "Logo watermark"
+      },
+      "peak_protection": {
+        "name": "Intelligent peak protection"
+      },
+      "distortion_correction": {
+        "name": "Distortion correction"
       }
     },
     "camera": {
@@ -182,6 +206,9 @@
       },
       "live": {
         "name": "Live"
+      },
+      "live_sub": {
+        "name": "Live (sub-stream)"
       }
     },
     "number": {
@@ -202,6 +229,33 @@
       },
       "chime_pir_ringtone_monitor": {
         "name": "Monitor Motion Ringtone"
+      },
+      "screen_brightness": {
+        "name": "Screen brightness"
+      }
+    },
+    "select": {
+      "screen_timeout": {
+        "name": "Screen auto-lock",
+        "state": {
+          "10": "10 s",
+          "15": "15 s",
+          "20": "20 s",
+          "25": "25 s",
+          "30": "30 s"
+        }
+      },
+      "wifi_sleep_mode": {
+        "name": "Wi-Fi sleep mode",
+        "state": {
+          "low_power": "Low power",
+          "ultra_low_power": "Ultra low power"
+        }
+      }
+    },
+    "text": {
+      "osd_text": {
+        "name": "OSD text"
       }
     }
   },
@@ -240,9 +294,12 @@
           "video_codec": "Video codec (auto = detect; hevc transcodes H.265 to H.264 for WebRTC; hevc_copy passes H.265 through untouched for low-power hosts / Frigate / Safari)",
           "stream_source": "Stream source (cloud = EZVIZ VTM relay; local = direct LAN, bypasses the cloud and fixes 'no live' on firmware that won't push to the cloud — needs HA on the same network as the doorbell; auto = try local then cloud)",
           "stream_mode": "Live view delivery (auto = default: detects the codec and picks for you — H.264 → webrtc, HEVC → mjpeg; webrtc = HA Stream/go2rtc, has audio + low latency but can't show HEVC without transcoding; mjpeg = per-viewer ffmpeg to motion-JPEG, codec-agnostic and robust for HEVC/multi-viewer but no audio)",
-          "stream_quality": "LAN stream quality (main = full resolution; sub = the device's low-resolution substream, far cheaper to decode — use it if video accumulates delay on a weak host such as a Raspberry Pi. Applies to the 'local' source only)",
+          "stream_quality": "Stream quality (main = full resolution; sub = the device's low-resolution substream, far cheaper to decode — use it if video accumulates delay on a weak host such as a Raspberry Pi. Applies to both the local and the cloud source)",
           "encryption_key": "Encryption key (usually the device's 6-character verification code, from its label). Only needed if the doorbell encrypts the video and the cloud won't hand the key over: it is then used to decrypt the stream so the live view works without turning encryption off.",
-          "diagnostic_dumps": "Diagnostic dumps (writes two .bin files in /config capturing the start of the stream, for bitstream analysis when reporting a video problem. Leave OFF: not useful in normal operation)"
+          "diagnostic_dumps": "Diagnostic dumps (writes two .bin files in /config capturing the start of the stream, for bitstream analysis when reporting a video problem. Leave OFF: not useful in normal operation)",
+          "silent_audio": "Add a silent audio track (peepholes have no microphone; the Google Home app on Android needs an audio track to play the camera over WebRTC)",
+          "sub_stream_camera": "Also create a sub-stream camera (a second live camera that always uses the device's low-resolution substream, e.g. for casting or Google Home; the main camera keeps the quality above)",
+          "sub_stream_mode": "Sub-stream camera delivery (same = as the main camera; or webrtc / mjpeg for this camera only)"
         }
       }
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any
 
@@ -32,6 +33,163 @@ REGION_URLS: dict[str, str] = {
 }
 
 
+# ── Shared cloud session ─────────────────────────────────────────────────
+#
+# Every config entry is one device, but they don't need one EZVIZ login each:
+# each login is a separate session on the account (EZVIZ caps an account at
+# ~10 terminals), and two entries re-logging in at the same time just churn
+# sessions. Entries of the same account therefore share one EzvizClient and
+# token. Keyed by (username, API host, password): a different password is a
+# different login on purpose, so a mistyped password in the config flow is
+# still rejected instead of riding on an existing session.
+_SHARED_SESSIONS: dict[tuple[str, str, str], dict[str, Any]] = {}
+_SHARED_SESSIONS_LOCK = threading.Lock()
+# A forced re-login by one entry is reused by the others for this long.
+_RELOGIN_DEDUP_SEC = 60.0
+
+
+def _acquire_shared_session(
+    key: tuple[str, str, str], token: dict[str, Any] | None
+) -> dict[str, Any]:
+    with _SHARED_SESSIONS_LOCK:
+        shared = _SHARED_SESSIONS.get(key)
+        if shared is None:
+            shared = {
+                "client": None,
+                "token": token,
+                "refs": 0,
+                "lock": threading.RLock(),
+                "relogin_at": 0.0,
+            }
+            _SHARED_SESSIONS[key] = shared
+        elif shared.get("token") is None and token:
+            shared["token"] = token
+        shared["refs"] += 1
+        return shared
+
+
+def _release_shared_session(key: tuple[str, str, str]) -> bool:
+    """Drop one reference; True when it was the last one."""
+    with _SHARED_SESSIONS_LOCK:
+        shared = _SHARED_SESSIONS.get(key)
+        if shared is None:
+            return True
+        shared["refs"] -= 1
+        if shared["refs"] <= 0:
+            _SHARED_SESSIONS.pop(key, None)
+            return True
+        return False
+
+
+# ── Peephole viewers (deviceCategory "CatEye", e.g. CP2) ─────────────────
+
+
+def _dig(obj: Any, *path: str, default: Any = None) -> Any:
+    for key in path:
+        if isinstance(obj, str) and obj[:1] in "{[":
+            try:
+                obj = json.loads(obj)
+            except ValueError:
+                return default
+        if not isinstance(obj, dict) or key not in obj:
+            return default
+        obj = obj[key]
+    return obj
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_cateye_status(info: dict[str, Any]) -> dict[str, Any]:
+    """Extract what a peephole viewer actually backs from a pagelist record.
+
+    The cloud sends the same catch-all payload to every model, so a CP2's
+    record also carries door-lock, chime, pet and face-recognition blocks
+    and switch states for hardware it doesn't have. Only these fields are
+    read; everything else is ignored on purpose.
+    """
+    info = info or {}
+    device = info.get("deviceInfos") or {}
+    status = info.get("STATUS") or {}
+    optionals = status.get("optionals") or {}
+    if isinstance(optionals, str):
+        try:
+            optionals = json.loads(optionals)
+        except ValueError:
+            optionals = {}
+    connection = info.get("CONNECTION") or {}
+    wifi = info.get("WIFI") or {}
+    video = _dig(info, "FEATURE_INFO", "1", "Video", default={}) or {}
+
+    battery = _as_int(optionals.get("powerRemaining"))
+    if battery is None:
+        details = _dig(video, "PowerMgr", "BatteryDetails", default=[]) or []
+        if details and isinstance(details[0], dict):
+            battery = _as_int(details[0].get("remain"))
+
+    upgrade = _dig(info, "UPGRADE", "isNeedUpgrade")
+    if upgrade is None:
+        upgrade = status.get("upgradeAvailable")
+
+    switches = {
+        _as_int(s.get("type")): bool(s.get("enable"))
+        for s in (info.get("SWITCH") or [])
+        if isinstance(s, dict)
+    }
+    battery_detail = (_dig(video, "PowerMgr", "BatteryDetails", default=[]) or [{}])[0]
+    if not isinstance(battery_detail, dict):
+        battery_detail = {}
+    osd = optionals.get("OSD")
+    if isinstance(osd, dict):
+        osd = [osd]
+    osd_text = osd[0].get("name") if isinstance(osd, list) and osd and isinstance(osd[0], dict) else None
+    cover = optionals.get("pri_cover_area") or {}
+    if isinstance(cover, str):
+        try:
+            cover = json.loads(cover)
+        except ValueError:
+            cover = {}
+
+    return {
+        "name": device.get("name"),
+        "version": device.get("version"),
+        "online": _as_int(device.get("status")) == 1,
+        "battery": battery,
+        "battery_status": _dig(video, "BatteryMgr", "BatteryStatus", "batteryStatus"),
+        "signal": _as_int(wifi.get("signal")),
+        "local_ip": connection.get("localIp") or wifi.get("address"),
+        "wan_ip": connection.get("wanIp") or optionals.get("wanIp") or connection.get("netIp"),
+        "encrypted": bool(_as_int(status.get("isEncrypt"))),
+        "upgrade_available": bool(_as_int(upgrade)),
+        "last_offline": device.get("offlineTime") or None,
+        "offline_notify": bool(_as_int(device.get("offlineNotify"))),
+        # Charging: BatteryDetails status 0 -> 1 when the panel is plugged in
+        # (type, the power source, goes 1 battery -> 0 external at the same time).
+        "charging": _as_int(battery_detail.get("status")) == 1 if battery_detail else None,
+        "privacy_areas": _as_int(cover.get("cover_num")) if isinstance(cover, dict) else None,
+        # Settings, each confirmed against the EZVIZ app on a CP2 (fw V5.4.0).
+        "logo_watermark": switches.get(702),
+        "peak_protection": switches.get(800),
+        "distortion_correction": switches.get(617),
+        "osd_text": osd_text,
+        "screen_brightness": _as_int(optionals.get("device_screen_lightness")),
+        "screen_timeout": _as_int(optionals.get("device_screen_overtime")),
+        "wifi_sleep_mode": _as_int(optionals.get("device_wifi_mode")),
+    }
+
+
+def _same_setting(reported: Any, wanted: Any) -> bool:
+    if isinstance(wanted, bool) or isinstance(reported, bool):
+        return bool(reported) == bool(wanted)
+    if isinstance(wanted, int) or isinstance(reported, int):
+        return _as_int(reported) == _as_int(wanted)
+    return (reported or "") == (wanted or "")
+
+
 class Hp7Api:
     """EZVIZ HP7 API client for cloud and local operations."""
 
@@ -53,9 +211,14 @@ class Hp7Api:
         self._username = username
         self._password = password
         self._region = region
-        self._token = token
-        self._client: EzvizClient | None = None
         self._url = REGION_URLS.get(region, REGION_URLS["eu"])
+        # _client / _token live in the account-wide shared session (see
+        # _SHARED_SESSIONS); the properties below read and write it.
+        self._session_key = (
+            (username or "").strip().lower(), self._url, password or ""
+        )
+        self._shared = _acquire_shared_session(self._session_key, token)
+        self._released = False
         self.supports_door = True
         self.supports_gate = True
         # LAN AES control-key cache: bare_serial -> (key_bytes, monotonic_ts).
@@ -95,6 +258,22 @@ class Hp7Api:
 
 
     @property
+    def _client(self) -> EzvizClient | None:
+        return self._shared["client"]
+
+    @_client.setter
+    def _client(self, value: EzvizClient | None) -> None:
+        self._shared["client"] = value
+
+    @property
+    def _token(self) -> dict[str, Any] | None:
+        return self._shared["token"]
+
+    @_token.setter
+    def _token(self, value: dict[str, Any] | None) -> None:
+        self._shared["token"] = value
+
+    @property
     def token(self) -> dict[str, Any] | None:
         """Get the current authentication token.
 
@@ -114,19 +293,23 @@ class Hp7Api:
         if self._client:
             return
 
-        try:
-            self._client = EzvizClient(
-                account=self._username,
-                password=self._password,
-                url=self._url,
-                token=self._token,
-            )
+        with self._shared["lock"]:
+            if self._client:
+                return  # another entry of this account created it meanwhile
+            try:
+                self._client = EzvizClient(
+                    account=self._username,
+                    password=self._password,
+                    url=self._url,
+                    token=self._token,
+                )
 
-            if not self._token:
-                self._login_and_store_token()
-        except Exception as exc:
-            _LOGGER.error("Failed to initialize EzvizClient: %s", exc)
-            raise RuntimeError(f"Failed to initialize EZVIZ client: {exc}") from exc
+                if not self._token:
+                    self._login_and_store_token()
+            except Exception as exc:
+                self._client = None
+                _LOGGER.error("Failed to initialize EzvizClient: %s", exc)
+                raise RuntimeError(f"Failed to initialize EZVIZ client: {exc}") from exc
 
     def _login_and_store_token(self, sms_code: int | None = None) -> None:
         """Authenticate with EZVIZ server and store token.
@@ -155,14 +338,22 @@ class Hp7Api:
         after a sustained cloud-failure streak to self-heal a dead token.
         Returns True if re-login succeeded.
         """
-        self._client = None
-        self._token = None
-        try:
-            self.ensure_client()
-            return self._client is not None
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("EZVIZ HP7: forced re-login failed: %s", exc)
-            return False
+        with self._shared["lock"]:
+            if (
+                self._client is not None
+                and time.monotonic() - self._shared["relogin_at"] < _RELOGIN_DEDUP_SEC
+            ):
+                # Another entry of this account just re-logged in.
+                return True
+            self._client = None
+            self._token = None
+            try:
+                self.ensure_client()
+                self._shared["relogin_at"] = time.monotonic()
+                return self._client is not None
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning("EZVIZ HP7: forced re-login failed: %s", exc)
+                return False
 
     def login(self, sms_code: int | None = None) -> bool:
         """Authenticate with EZVIZ server.
@@ -232,18 +423,32 @@ class Hp7Api:
         for serial, data in devices.items():
             device_info = data.get("deviceInfos", {})
             name = device_info.get("name") or device_info.get("deviceName") or "Device"
-            result[serial] = {"device_name": name}
+            result[serial] = {
+                "device_name": name,
+                "category": device_info.get("deviceCategory"),
+                "model": device_info.get("deviceSubCategory"),
+            }
         return result
 
     def close(self) -> None:
-        """Close API connection and cleanup resources."""
-        if self._client:
+        """Release this entry's share of the account session.
+
+        The cloud session is logged out only when the last entry of the
+        account is unloaded; otherwise it stays up for the others.
+        """
+        if self._released:
+            return
+        self._released = True
+        client = self._client
+        if not _release_shared_session(self._session_key):
+            return
+        if client:
             try:
-                self._client.logout()
+                client.logout()
             except Exception as exc:
                 _LOGGER.debug("Error during logout: %s", exc)
             finally:
-                self._client = None
+                self._shared["client"] = None
 
     # ── LAN (CPD7) streaming credentials ────────────────────────────────
     #
@@ -1207,6 +1412,102 @@ class Hp7Api:
             if coerced is not None:
                 out["defence_on"] = coerced
         return out
+
+    def get_cateye_status(self, serial: str) -> dict[str, Any]:
+        """Status of a peephole viewer: one cloud pagelist read, nothing else.
+
+        The pagelist is the cloud's copy of what the device reported on its
+        last wake, so reading it never wakes a battery device. None of the
+        doorbell endpoints (chime config, IoT features, alarm detail, key
+        list) are called: several of them are relayed to the device itself.
+        """
+        self.ensure_client()
+        if not self._client:
+            return {}
+        try:
+            info = self._client.get_device_infos(serial) or {}
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("EZVIZ HP7: CatEye status fetch failed for %s: %s", serial, exc)
+            return {}
+        return parse_cateye_status(info)
+
+    def _cateye_send(self, serial: str, key: str, value: Any) -> None:
+        """One write of a peephole setting, through the path that the CP2
+        actually takes (found by write-testing each candidate path)."""
+        client = self._client
+        if key == "offline_notify":
+            client.set_offline_notification(serial, int(bool(value)))
+        elif key in ("logo_watermark", "peak_protection", "distortion_correction"):
+            stype = {"logo_watermark": 702, "peak_protection": 800, "distortion_correction": 617}[key]
+            client.switch_status(serial, stype, int(bool(value)), channel_no=0)
+        elif key == "osd_text":
+            if value:
+                client.set_camera_osd(serial, text=str(value), channel=1)
+            else:
+                client.set_camera_osd(serial, enabled=False, channel=1)
+        elif key == "screen_brightness":
+            client.set_dev_config_kv(serial, 1, "device_screen_lightness", int(value))
+        elif key == "screen_timeout":
+            client.set_dev_config_kv(serial, 1, "device_screen_overtime", int(value))
+        elif key == "wifi_sleep_mode":
+            # Channel 0 for this one: channel 1 is accepted and ignored.
+            client.set_dev_config_kv(serial, 0, "device_wifi_mode", int(value))
+        else:
+            raise ValueError(f"unknown CatEye setting {key}")
+
+    def _cateye_send_with_backoff(self, serial: str, key: str, value: Any) -> None:
+        from .const import CATEYE_TRANSIENT_CODES, CATEYE_WRITE_BACKOFF
+
+        delays = list(CATEYE_WRITE_BACKOFF)
+        while True:
+            try:
+                self._cateye_send(serial, key, value)
+                return
+            except Exception as exc:  # noqa: BLE001
+                transient = any(f"'code': {c}" in str(exc) for c in CATEYE_TRANSIENT_CODES)
+                if not transient or not delays:
+                    raise
+                delay = delays.pop(0)
+                _LOGGER.debug(
+                    "EZVIZ HP7: %s not answering for %s (%s), retry in %ss",
+                    serial, key, exc, delay,
+                )
+                time.sleep(delay)
+
+    def cateye_write(self, serial: str, key: str, value: Any) -> tuple[bool, dict[str, Any]]:
+        """Write a peephole setting and wait until the cloud reports it.
+
+        Returns (confirmed, latest status). Blocking: run in an executor.
+        Retries with backoff while the device wakes up, re-sends once if the
+        value hasn't moved after CATEYE_RESEND_AFTER s, and gives up after
+        CATEYE_CONFIRM_TIMEOUT s, returning the status the cloud reports so
+        the entity can fall back to it.
+        """
+        from .const import CATEYE_CONFIRM_POLL, CATEYE_CONFIRM_TIMEOUT, CATEYE_RESEND_AFTER
+
+        self.ensure_client()
+        if not self._client:
+            return False, {}
+        status: dict[str, Any] = {}
+        try:
+            self._cateye_send_with_backoff(serial, key, value)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("EZVIZ HP7: %s rejected %s=%r: %s", serial, key, value, exc)
+            return False, self.get_cateye_status(serial)
+        started = time.monotonic()
+        resent = False
+        while time.monotonic() - started < CATEYE_CONFIRM_TIMEOUT:
+            time.sleep(CATEYE_CONFIRM_POLL)
+            status = self.get_cateye_status(serial) or status
+            if _same_setting(status.get(key), value):
+                return True, status
+            if not resent and time.monotonic() - started >= CATEYE_RESEND_AFTER:
+                resent = True
+                try:
+                    self._cateye_send_with_backoff(serial, key, value)
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("EZVIZ HP7: re-send of %s failed: %s", key, exc)
+        return False, status
 
     def get_status(
         self,

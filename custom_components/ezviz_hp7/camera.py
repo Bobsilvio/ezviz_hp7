@@ -40,9 +40,12 @@ async def async_setup_entry(
     model: str = data.get("model") or "HP7"
 
 
-    async_add_entities(
-        [Hp7LastSnapshotCamera(hass, coordinator, serial, model)]
-    )
+    if not data.get("cateye"):
+        # Doorbells: picture of the last alarm from the cloud. Peephole
+        # viewers raise no alarms, so they only get the live camera.
+        async_add_entities(
+            [Hp7LastSnapshotCamera(hass, coordinator, serial, model)]
+        )
 
     # Live H.264 stream via the VTM cloud relay (Renier pylocalapi).
     # Best-effort: failures here are logged but do not prevent the rest of

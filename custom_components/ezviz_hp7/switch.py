@@ -16,6 +16,32 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EZVIZ HP7/CP7 switches."""
     data = hass.data[DOMAIN][entry.entry_id]
+    if data.get("cateye"):
+        # Peephole viewer: only its own settings, no doorbell switches.
+        from .cateye import CatEyeSettingEntity
+
+        class CatEyeSwitch(CatEyeSettingEntity, SwitchEntity):
+            @property
+            def is_on(self) -> bool | None:
+                value = self._current()
+                return None if value is None else bool(value)
+
+            async def async_turn_on(self, **kwargs) -> None:
+                await self._async_write(True)
+
+            async def async_turn_off(self, **kwargs) -> None:
+                await self._async_write(False)
+
+        args = (data["coordinator"], data["api"], data["serial"], data.get("model") or "CP2")
+        async_add_entities(
+            [
+                CatEyeSwitch(*args, "offline_notify", "mdi:bell-alert-outline"),
+                CatEyeSwitch(*args, "logo_watermark", "mdi:watermark"),
+                CatEyeSwitch(*args, "peak_protection", "mdi:battery-heart-outline"),
+                CatEyeSwitch(*args, "distortion_correction", "mdi:panorama-variant-outline"),
+            ]
+        )
+        return
     api = data["api"]
     serial = data["serial"]
     monitor_serial = data.get("monitor_serial")

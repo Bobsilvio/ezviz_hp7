@@ -31,6 +31,10 @@ async def async_setup_entry(
         async_add_entities: Callback to add entities.
     """
     data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+    if data.get("cateye"):
+        # Peephole viewer: no lock relays, chime, DND/privacy/defence or
+        # doorbell settings to control.
+        return
     api: Hp7Api = data["api"]
     serial: str = data["serial"]
     model: str = data.get("model") or "HP7"

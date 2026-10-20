@@ -82,6 +82,22 @@ CONF_STREAM_QUALITY = "stream_quality"
 STREAM_QUALITY_MAIN = "main"
 STREAM_QUALITY_SUB = "sub"
 STREAM_QUALITIES = [STREAM_QUALITY_MAIN, STREAM_QUALITY_SUB]
+# Opt-in second live camera that always uses the sub-stream, next to the
+# main one (which keeps following CONF_STREAM_QUALITY). Lets a user keep full
+# resolution in HA and use the light stream elsewhere (casting, Google Home),
+# disabling whichever entity they don't need.
+CONF_SUB_CAMERA = "sub_stream_camera"
+# Delivery of that sub-stream camera: "same" follows the main camera's
+# (resolved) mode; "webrtc"/"mjpeg" set it independently, e.g. MJPEG for the
+# main camera in HA and WebRTC for the sub one used by casting/Google.
+CONF_SUB_STREAM_MODE = "sub_stream_mode"
+SUB_STREAM_MODE_SAME = "same"
+SUB_STREAM_MODES = [SUB_STREAM_MODE_SAME, "webrtc", "mjpeg"]
+
+# CatEye (peephole) only: their stream is built without audio (no
+# microphone); this adds a silent track instead. The Google Home app on
+# Android only plays a WebRTC camera once it has an audio track.
+CONF_SILENT_AUDIO = "silent_audio"
 
 # Write raw stream captures to <config>/ezviz_hp7_{es,ps}_dump_<serial>.bin
 # for bitstream analysis when reporting a streaming bug. Off by default:
@@ -98,10 +114,37 @@ CONF_DIAGNOSTIC_DUMPS = "diagnostic_dumps"
 CONF_ENCRYPTION_KEY = "encryption_key"
 
 # Platforms to set up
-PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number"]
+PLATFORMS = ["button", "sensor", "binary_sensor", "camera", "switch", "number", "select", "text"]
 
 # Poll interval in seconds. 2 s was aggressive enough to trigger HTTP 500 from
 # the EZVIZ pagelist endpoint under load (see issue #25); 15 s matches Pedro's
 # go2rtc fork and albrzmr's fork and is well within the rate-limit envelope
 # while still surfacing doorbell rings / motion within one cycle.
 UPDATE_INTERVAL_SEC = 15
+
+# Peephole viewers (EZVIZ deviceCategory "CatEye", e.g. CP2) are battery
+# cameras that report to the cloud on their own wake schedule. Their status is
+# read from the cloud pagelist only (never from the device), and it changes
+# slowly, so a long interval is plenty.
+CATEYE_UPDATE_INTERVAL_SEC = 300
+# How long the cloud stream stays open after the last viewer leaves. Not a
+# keep-alive: just enough to cover the gap between the MJPEG handler opening
+# the session and ffmpeg attaching to the relay, so the session isn't torn
+# down and reopened (which would wake the device twice).
+CATEYE_IDLE_TIMEOUT = 5.0
+
+# Settings writes to a peephole: the first command often reaches the device
+# asleep and fails (2009 "device network error") or is silently dropped, as in
+# the EZVIZ app ("command failed", then a retry succeeds). Writes are retried
+# with backoff on those errors, then confirmed by re-reading the cloud, with
+# one re-send if nothing moved. If the value still isn't confirmed the entity
+# falls back to what the cloud reports and the action raises an error.
+CATEYE_WRITE_BACKOFF = (2, 4, 8)
+CATEYE_CONFIRM_POLL = 3
+CATEYE_CONFIRM_TIMEOUT = 45
+CATEYE_RESEND_AFTER = 15
+CATEYE_TRANSIENT_CODES = (2009, 2004)
+# Screen auto-lock time choices offered by the EZVIZ app (seconds).
+CATEYE_SCREEN_TIMEOUTS = [10, 15, 20, 25, 30]
+# Wi-Fi sleep mode values (optionals.device_wifi_mode).
+CATEYE_WIFI_MODES = {"low_power": 1, "ultra_low_power": 0}

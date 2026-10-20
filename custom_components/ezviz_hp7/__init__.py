@@ -25,16 +25,22 @@ from .const import (
     STREAM_SOURCES,
     CONF_STREAM_MODE,
     STREAM_MODE_AUTO,
+    STREAM_MODE_MJPEG,
     STREAM_MODES,
     CONF_DIAGNOSTIC_DUMPS,
     CONF_ENCRYPTION_KEY,
+    CONF_SILENT_AUDIO,
     CONF_STREAM_QUALITY,
+    CONF_SUB_CAMERA,
+    CONF_SUB_STREAM_MODE,
+    SUB_STREAM_MODE_SAME,
+    SUB_STREAM_MODES,
     STREAM_QUALITY_MAIN,
     STREAM_QUALITIES,
 )
 from .api import Hp7Api
 from .coordinator import Hp7Coordinator
-from .device_info import DEFAULT_MODEL, detect_model
+from .device_info import DEFAULT_MODEL, detect_model_and_category, is_cateye
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,12 +141,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ).lower()
     if stream_quality not in STREAM_QUALITIES:
         stream_quality = STREAM_QUALITY_MAIN
+    sub_camera = bool(
+        entry.options.get(CONF_SUB_CAMERA, entry.data.get(CONF_SUB_CAMERA, False))
+    )
+    sub_stream_mode = str(
+        entry.options.get(
+            CONF_SUB_STREAM_MODE,
+            entry.data.get(CONF_SUB_STREAM_MODE, SUB_STREAM_MODE_SAME),
+        )
+        or SUB_STREAM_MODE_SAME
+    ).lower()
+    if sub_stream_mode not in SUB_STREAM_MODES:
+        sub_stream_mode = SUB_STREAM_MODE_SAME
     encryption_key = str(
         entry.options.get(
             CONF_ENCRYPTION_KEY, entry.data.get(CONF_ENCRYPTION_KEY, "")
         )
         or ""
     ).strip()
+    silent_audio = bool(
+        entry.options.get(CONF_SILENT_AUDIO, entry.data.get(CONF_SILENT_AUDIO, True))
+    )
     diagnostic_dumps = bool(
         entry.options.get(
             CONF_DIAGNOSTIC_DUMPS,
@@ -148,6 +169,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
+    api: Hp7Api | None = None
     try:
         api = Hp7Api(username, password, region, token=token)
         await hass.async_add_executor_job(api.login)
@@ -161,23 +183,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # integration look broken when the real fault was elsewhere (#49:
         # HA core's own resolver was timing out).
         _LOGGER.debug("EZVIZ HP7 setup deferred: %s", exc)
+        if api is not None:
+            # Give back this entry's share of the account session.
+            await hass.async_add_executor_job(api.close)
         raise ConfigEntryNotReady(f"Cannot connect to EZVIZ HP7: {exc}") from exc
 
     # Detect device model (HP7 / CP7 / ...) from the cloud so DeviceInfo
     # shows the right label. Falls back to DEFAULT_MODEL on any error.
     try:
-        model = await hass.async_add_executor_job(detect_model, api, serial)
+        model, category = await hass.async_add_executor_job(
+            detect_model_and_category, api, serial
+        )
     except Exception as exc:  # noqa: BLE001
         _LOGGER.debug("Model detection failed (%s): %s", serial, exc)
-        model = DEFAULT_MODEL
+        model, category = DEFAULT_MODEL, None
+    cateye = is_cateye(category)
+    if cateye and stream_mode == STREAM_MODE_AUTO:
+        # "auto" probes the codec by opening a cloud stream at every startup,
+        # which wakes a battery peephole for nothing. Peepholes stream HEVC
+        # (CP2: 1080p HEVC, no audio), which only MJPEG can show in a browser.
+        stream_mode = STREAM_MODE_MJPEG
 
     coordinator = Hp7Coordinator(
-        hass, api, serial, monitor_serial, config_entry=entry
+        hass, api, serial, monitor_serial, config_entry=entry, cateye=cateye
     )
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as exc:
         _LOGGER.debug("EZVIZ HP7 first refresh deferred: %s", exc)
+        await hass.async_add_executor_job(api.close)
         raise ConfigEntryNotReady(f"Failed to fetch EZVIZ HP7 data: {exc}") from exc
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
@@ -185,6 +219,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "serial": serial,
         "monitor_serial": monitor_serial,
         "model": model,
+        "category": category,
+        "cateye": cateye,
         "relay_port": relay_port,
         "relay_bind": relay_bind,
         "aggressive_mpegts": aggressive_mpegts,
@@ -192,6 +228,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "stream_source": stream_source,
         "stream_mode": stream_mode,
         "stream_quality": stream_quality,
+        "sub_camera": sub_camera,
+        "sub_stream_mode": sub_stream_mode,
+        "silent_audio": silent_audio,
         "diagnostic_dumps": diagnostic_dumps,
         "encryption_key": encryption_key,
         "coordinator": coordinator,

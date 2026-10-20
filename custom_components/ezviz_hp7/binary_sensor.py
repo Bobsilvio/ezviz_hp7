@@ -230,6 +230,25 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
 
     entities: list[BinarySensorEntity] = []
 
+    if data.get("cateye"):
+        # Peephole viewer: online state, video encryption and firmware
+        # update. No motion/ring/unlock: the device has no PIR, button or
+        # lock.
+        for key, translation_key, device_class, diagnostic in (
+            ("online", None, BinarySensorDeviceClass.CONNECTIVITY, False),
+            ("charging", None, BinarySensorDeviceClass.BATTERY_CHARGING, False),
+            ("encrypted", "encryption", None, False),
+            ("upgrade_available", None, BinarySensorDeviceClass.UPDATE, True),
+        ):
+            ent = Hp7BinarySimple(
+                coordinator, serial, model, key, translation_key, device_class
+            )
+            if diagnostic:
+                ent._attr_entity_category = EntityCategory.DIAGNOSTIC
+            entities.append(ent)
+        async_add_entities(entities)
+        return
+
     for key, translation_key, device_class in SIMPLE_MAP:
         entities.append(
             Hp7BinarySimple(coordinator, serial, model, key, translation_key, device_class)
@@ -275,8 +294,8 @@ class Hp7BinarySimple(CoordinatorEntity, BinarySensorEntity):
         serial: str,
         model: str,
         key: str,
-        translation_key: str,
-        device_class: BinarySensorDeviceClass,
+        translation_key: str | None,
+        device_class: BinarySensorDeviceClass | None,
     ) -> None:
         """Initialize binary sensor entity.
 

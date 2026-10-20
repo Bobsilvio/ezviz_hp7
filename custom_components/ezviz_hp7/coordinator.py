@@ -11,7 +11,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .const import UPDATE_INTERVAL_SEC
+from .const import CATEYE_UPDATE_INTERVAL_SEC, UPDATE_INTERVAL_SEC
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -35,6 +35,7 @@ class Hp7Coordinator(DataUpdateCoordinator):
         serial: str,
         monitor_serial: str | None = None,
         config_entry: ConfigEntry | None = None,
+        cateye: bool = False,
     ) -> None:
         """Initialize coordinator.
 
@@ -46,6 +47,9 @@ class Hp7Coordinator(DataUpdateCoordinator):
             config_entry: HA config entry. Required by recent HA versions
                 (2024.12+) to use async_config_entry_first_refresh; older
                 releases accept it as a no-op kwarg too.
+            cateye: Peephole viewer (deviceCategory "CatEye", e.g. CP2):
+                cloud-pagelist-only polling at CATEYE_UPDATE_INTERVAL_SEC,
+                no doorbell endpoints (alarm detail, key list, chime).
         """
         # Newer HA (2024.10+) requires DataUpdateCoordinator subclasses to
         # carry their owning ConfigEntry before async_config_entry_first_refresh
@@ -54,7 +58,9 @@ class Hp7Coordinator(DataUpdateCoordinator):
         # older builds.
         kwargs: dict[str, Any] = {
             "name": "EZVIZ HP7",
-            "update_interval": timedelta(seconds=UPDATE_INTERVAL_SEC),
+            "update_interval": timedelta(
+                seconds=CATEYE_UPDATE_INTERVAL_SEC if cateye else UPDATE_INTERVAL_SEC
+            ),
         }
         params = inspect.signature(DataUpdateCoordinator.__init__).parameters
         if "config_entry" in params and config_entry is not None:
@@ -73,6 +79,7 @@ class Hp7Coordinator(DataUpdateCoordinator):
         self.api = api
         self.serial = serial
         self.monitor_serial = monitor_serial
+        self.cateye = cateye
         # The EZVIZ cloud (pagelist) hiccups often — 504 / euauth timeouts /
         # brief rate-limits — usually recovering within a cycle or two. Rather
         # than blanking every cloud-backed entity to "unknown" on the first
@@ -102,6 +109,9 @@ class Hp7Coordinator(DataUpdateCoordinator):
         someone is actually watching, poll at a quarter of the rate; restore
         the normal cadence as soon as the last viewer leaves.
         """
+        if self.cateye:
+            # Cloud-only polling never competes with the device's stream.
+            return
         relay = self.live_relay
         watching = bool(
             relay is not None
@@ -133,9 +143,14 @@ class Hp7Coordinator(DataUpdateCoordinator):
         # RequestException and returns {}). Treat both the same: hold the last
         # good data for a short grace window before degrading to unavailable.
         try:
-            data = await self.hass.async_add_executor_job(
-                self.api.get_status, self.serial, self.monitor_serial
-            )
+            if self.cateye:
+                data = await self.hass.async_add_executor_job(
+                    self.api.get_cateye_status, self.serial
+                )
+            else:
+                data = await self.hass.async_add_executor_job(
+                    self.api.get_status, self.serial, self.monitor_serial
+                )
             failure: str | None = None if data else "empty status from cloud"
         except Exception as exc:  # noqa: BLE001
             data = None
@@ -169,6 +184,10 @@ class Hp7Coordinator(DataUpdateCoordinator):
 
         # Success — clear the streak and continue with fresh data.
         self._fail_streak = 0
+
+        if self.cateye:
+            # No alarms, no keys on a peephole viewer.
+            return data
 
         alarm_time = data.get("last_alarm_time")
         if alarm_time and alarm_time != self._last_alarm_time:

@@ -195,7 +195,24 @@ class _PreStartedSource:
     def streamssn(self) -> str:
         return getattr(self._src, "streamssn", "lan")
 
+# Silence for peephole streams, which are built without audio (no
+# microphone): see CONF_SILENT_AUDIO. A source filter rather than the lavfi
+# input device, so only libavfilter is needed; ffmpeg paces it against the
+# live video (audio starts with the video and follows it, timestamps
+# monotonic). -shortest ends the output with the video: silence never ends,
+# so without it ffmpeg would outlive a dead source and keep the viewer on a
+# frozen picture past the relay's stall watchdog. Measured: no added latency.
+SILENT_AUDIO = [
+    "-filter_complex", "anullsrc=r=16000:cl=mono[silence]",
+    "-map", "[silence]",
+    "-shortest",
+    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+]
+
 VIDEO_STREAM_ID = 0xE0
+# A keyframe arriving this soon after the one the GOP cache restarted on is
+# kept together with it rather than replacing it (see _gop_update).
+KEYFRAME_PAIR_WINDOW = 0.5
 AUDIO_STREAM_ID = 0xC0
 
 FFMPEG_KILL_TIMEOUT = 2.0
@@ -327,6 +344,12 @@ _RAP_MARKERS = (
 # Kept for the fan-out resync path, which only needs "can a viewer join
 # here" — parameter sets and random-access points both qualify.
 _KEYFRAME_MARKERS = _PARAM_SET_MARKERS + _RAP_MARKERS
+
+# MPEG-PS program stream map. The peephole firmware sends system header + PSM
+# ahead of every keyframe (CP2 capture: one per IDR). A viewer fed raw MPEG-PS
+# has to start there: without the PSM, ffmpeg's mpeg demuxer guesses the
+# video stream's codec from its id (MPEG-2) and never shows a picture.
+_PS_MAP_MARKER = b"\x00\x00\x01\xbc"
 
 
 def _has_keyframe(payload: bytes) -> bool:
@@ -518,8 +541,19 @@ def _sender_thread(
     stop: threading.Event,
     label: str,
     on_drain: Any = None,
+    drop_backlog: bool = False,
 ) -> None:
-    """Wait for ffmpeg to connect, then forward the queue into that socket."""
+    """Wait for ffmpeg to connect, then forward the queue into that socket.
+
+    drop_backlog: discard whatever queued up before ffmpeg connected. Used
+    for audio: ffmpeg opens its inputs one after the other, so the audio
+    queue fills while it is still probing the video input, and that backlog
+    then arrives as one burst. Re-timestamped by arrival (wall clock), a
+    burst squeezes seconds of audio into a few milliseconds and runs
+    backwards against the live audio after it. HA's stream worker (HLS,
+    which Google casting uses) then cannot read the video parameters within
+    its probe window and fails with "Error muxing first keyframe".
+    """
     try:
         listener.settimeout(INPUT_ACCEPT_TIMEOUT)
         try:
@@ -530,6 +564,22 @@ def _sender_thread(
             )
             return
         _LOGGER.debug("Hp7StreamRelay: %s accepted from %s", label, peer)
+        if drop_backlog:
+            dropped = 0
+            while True:
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    q.put(None)  # keep the stop sentinel
+                    break
+                dropped += 1
+            if dropped:
+                _LOGGER.debug(
+                    "Hp7StreamRelay: %s dropped %d stale chunks at connect",
+                    label, dropped,
+                )
     finally:
         try:
             listener.close()
@@ -600,6 +650,7 @@ class Hp7StreamRelay:
         stream_source: str = "cloud",
         stream_mode: str = "mjpeg",
         stream_quality: str = "main",
+        silent_audio: bool = True,
         diagnostic_dumps: bool = False,
         encryption_key: str = "",
         hass: Any = None,
@@ -668,6 +719,8 @@ class Hp7StreamRelay:
         # a packet capture.
         self._diagnostic_dumps = bool(diagnostic_dumps)
         self._configured_key = (encryption_key or "").strip()
+        # Peepholes only: a silent track instead of no audio (SILENT_AUDIO).
+        self.silent_audio = bool(silent_audio)
         self._es_dump_buf = bytearray()
         self._es_dump_done = False
         # Raw MPEG-PS dump + keyframe-marker counter (#41): the HPD5 "synced"
@@ -711,10 +764,29 @@ class Hp7StreamRelay:
         # prepended before a decoder can use it (#51).
         self._param_sets: bytes = b""
         self._gop_lock = threading.Lock()
+        # When the cache last restarted on a keyframe (monotonic), see
+        # _gop_update: a second keyframe arriving right behind the first is
+        # kept with it instead of replacing it.
+        self._gop_restart_at = 0.0
+        # Makes "update the GOP cache + fan the chunk out" (reader) and
+        # "snapshot the cache + preload + subscribe" (new viewer) mutually
+        # exclusive; see _publish_video.
+        self._sub_lock = threading.Lock()
         # True while the active shared source is the CPD7 LAN pipeline.
         self._active_lan: bool = False
         self._idle_handle: Optional[asyncio.TimerHandle] = None
         self._active_clients: int = 0
+        # Seconds the shared cloud session survives its last client. Battery
+        # peepholes override this with CATEYE_IDLE_TIMEOUT.
+        self.idle_timeout: float = PREWARM_IDLE_TIMEOUT
+        # Peephole viewers (CatEye) stream video only: no audio input for
+        # ffmpeg (waiting on one that never delivers stalls it with no
+        # output), and no HEVC->H.264 transcode when MJPEG decodes anyway.
+        self.peephole: bool = False
+        # Peepholes in WebRTC mode: where the H.264 conversion writes the
+        # latest frame (every 2 s, atomically) so the camera's still keeps
+        # showing the last frame viewed. Set by the platform setup.
+        self.last_frame_path: Optional[str] = None
 
     @property
     def port(self) -> int:
@@ -792,7 +864,10 @@ class Hp7StreamRelay:
         same CPU as the live one. Evicting them frees that up.
         """
         now = time.monotonic()
-        kf = video and _has_keyframe(item)
+        if self.peephole:
+            kf = video and _PS_MAP_MARKER in item
+        else:
+            kf = video and _has_keyframe(item)
         for q in list(qs):
             qid = id(q)
             if video and qid in self._q_resync:
@@ -906,6 +981,66 @@ class Hp7StreamRelay:
         finally:
             self._ps_dump_buf = bytearray()
 
+    def _publish_video(
+        self, qs: List["queue.Queue[Optional[bytes]]"], chunk: bytes
+    ) -> None:
+        """Add a video chunk to the GOP cache and fan it out, as one step.
+
+        Held under ``_sub_lock`` together with ``_subscribe``, so a chunk can
+        never fall between a new viewer's cached GOP and its live feed. When
+        it did, the viewer got that chunk twice (or not at all) and the frame
+        it belongs to was corrupted: right after the first keyframe, usually
+        that keyframe, so a WebRTC viewer showed grey or garbage until the
+        doorbell's next one, up to a full 4 s GOP later. Measured against
+        these methods with a busy reader (tools/race_test.py): about 4 in 10
+        joins got a duplicated chunk; none with the lock.
+        """
+        with self._sub_lock:
+            self._gop_update(chunk)
+            self._fanout(qs, chunk, video=True)
+
+    def _subscribe(
+        self,
+        lan: bool,
+        raw_q: "queue.Queue[Optional[bytes]]",
+        v_q: "queue.Queue[Optional[bytes]]",
+        a_q: "queue.Queue[Optional[bytes]]",
+    ) -> List[bytes]:
+        """Preload the cached GOP into a new viewer's queues, then subscribe.
+
+        Runs under ``_sub_lock`` (see ``_publish_video``). Returns the GOP
+        chunks that were preloaded.
+        """
+        with self._sub_lock:
+            gop = self._gop_snapshot()
+            if lan:
+                for chunk in gop:
+                    try:
+                        raw_q.put_nowait(chunk)
+                    except queue.Full:
+                        break
+                now0 = time.monotonic()
+                self._q_last_drain[id(raw_q)] = now0
+                self._q_last_drain[id(a_q)] = now0
+                if self.peephole and not gop:
+                    # Nothing cached yet: hold this viewer until the next
+                    # stream map instead of handing it a mid-GOP pack.
+                    self._q_resync.add(id(raw_q))
+                self._sub_raw_qs.append(raw_q)
+                self._sub_a_qs.append(a_q)  # de-mislabelled AAC audio
+            else:
+                for chunk in gop:
+                    try:
+                        v_q.put_nowait(chunk)
+                    except queue.Full:
+                        break
+                now0 = time.monotonic()
+                self._q_last_drain[id(v_q)] = now0
+                self._q_last_drain[id(a_q)] = now0
+                self._sub_v_qs.append(v_q)
+                self._sub_a_qs.append(a_q)
+        return gop
+
     def _gop_update(self, chunk: bytes) -> None:
         """Track the stream since the last random-access point (#37, #51).
 
@@ -923,14 +1058,38 @@ class Hp7StreamRelay:
         separately and prepended at snapshot time.
         """
         with self._gop_lock:
+            if self.peephole:
+                # MPEG-PS passthrough: a join point is a chunk carrying the
+                # stream map (which precedes every keyframe on this firmware).
+                if _PS_MAP_MARKER in chunk:
+                    self._kf_markers_seen += 1
+                    self._gop_buf = bytearray(chunk)
+                elif self._gop_buf:
+                    if len(self._gop_buf) + len(chunk) > GOP_CACHE_MAX:
+                        self._gop_buf = bytearray()
+                    else:
+                        self._gop_buf.extend(chunk)
+                return
             if _has_param_sets(chunk):
                 extracted = _extract_param_sets(chunk)
                 if extracted:
                     self._param_sets = extracted
-            if _has_keyframe(chunk):
+            now = time.monotonic()
+            if _has_keyframe(chunk) and not (
+                self._gop_buf and now - self._gop_restart_at < KEYFRAME_PAIR_WINDOW
+            ):
                 self._kf_markers_seen += 1
                 self._gop_buf = bytearray(chunk)
+                self._gop_restart_at = now
             elif self._gop_buf:
+                # Also taken for a keyframe that follows another one within
+                # KEYFRAME_PAIR_WINDOW: the HP5 opens every session with two
+                # keyframes 66 ms apart, and a viewer handed only the second
+                # one (cache restarted on it) sat on a grey picture until the
+                # next one, 4 s later, while viewers handed both decoded at
+                # once (captured 2026-10-18, slow vs fast opens).
+                if _has_keyframe(chunk):
+                    self._kf_markers_seen += 1
                 if len(self._gop_buf) + len(chunk) > GOP_CACHE_MAX:
                     # Oversized GOP: drop and wait for the next keyframe —
                     # new viewers get the pre-cache behaviour for this GOP.
@@ -955,6 +1114,10 @@ class Hp7StreamRelay:
         with self._gop_lock:
             buf = bytes(self._gop_buf)
             params = self._param_sets
+        if self.peephole:
+            if not buf or _PS_MAP_MARKER not in buf:
+                return []
+            return [buf[i:i + RELAY_CHUNK] for i in range(0, len(buf), RELAY_CHUNK)]
         if not buf or not _has_keyframe(buf):
             return []
         if not _has_param_sets(buf):
@@ -1130,6 +1293,7 @@ class Hp7StreamRelay:
         if (
             codec == "hevc"
             and self._stream_mode == "webrtc"
+            and not self.peephole  # converted to H.264 by the relay itself
             and not self._warned_hevc_webrtc
         ):
             self._warned_hevc_webrtc = True
@@ -1235,8 +1399,11 @@ class Hp7StreamRelay:
         VTM is used as fallback.
         """
         def _open_cloud():
+            # The stream quality option used to apply to the LAN path only;
+            # the cloud URL carries the same choice (stream=1 main, 2 sub).
             return open_cloud_stream(
-                ezviz_client, self._serial, channel=self._channel
+                ezviz_client, self._serial, channel=self._channel,
+                stream_type=2 if self._stream_quality == "sub" else 1,
             )
 
         def _open_lan():
@@ -1339,7 +1506,7 @@ class Hp7StreamRelay:
             return
         loop = asyncio.get_event_loop()
         self._idle_handle = loop.call_later(
-            PREWARM_IDLE_TIMEOUT, self._idle_expired
+            self.idle_timeout, self._idle_expired
         )
 
     def _idle_expired(self) -> None:
@@ -1436,7 +1603,14 @@ class Hp7StreamRelay:
                     break
                 if not body:
                     continue
-                if self._active_lan:
+                if self._active_lan or self.peephole:
+                    # Peepholes (cloud) take this path too: the VTM payload is
+                    # the same MPEG-PS, and passing it through keeps the
+                    # container timestamps. Splitting it into a raw HEVC
+                    # elementary stream made ffmpeg hold its first output until
+                    # the NEXT keyframe and probe for seconds (measured on a
+                    # CP2 capture at real-time pace: ~12 s to the first frame
+                    # vs ~0.4 s passed through).
                     # LAN path: the decoder emits complete MPEG-PS (muxed
                     # video + audio). Fan the raw feed out for the VIDEO
                     # (one ffmpeg `-f mpeg` input, demuxed internally) AND
@@ -1451,9 +1625,8 @@ class Hp7StreamRelay:
                     if not body:
                         continue
                     v_bytes += len(body)
-                    self._gop_update(body)
+                    self._publish_video(self._sub_raw_qs, body)
                     self._ps_dump(body)
-                    self._fanout(self._sub_raw_qs, body, video=True)
                     for stream_id, payload in parser.feed(body):
                         if stream_id == AUDIO_STREAM_ID and payload:
                             a_bytes += len(payload)
@@ -1477,8 +1650,9 @@ class Hp7StreamRelay:
                     self._check_scrambled(parser)
                     if time.monotonic() >= next_v_log:
                         _LOGGER.info(
-                            "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
+                            "Hp7StreamRelay: broadcast %s MPEG-PS progress "
                             "%d B audio=%d B subs=%d kf_markers=%d drops=%d",
+                            "LAN" if self._active_lan else "cloud",
                             v_bytes, a_bytes, len(self._sub_raw_qs),
                             self._kf_markers_seen, self._drops,
                         )
@@ -1489,7 +1663,6 @@ class Hp7StreamRelay:
                         continue
                     if stream_id == VIDEO_STREAM_ID:
                         v_bytes += len(payload)
-                        self._gop_update(payload)
                         self._es_dump(payload)
                         if self._detected_codec is None:
                             guess = _sniff_video_codec(payload)
@@ -1501,7 +1674,7 @@ class Hp7StreamRelay:
                                     guess, self._serial,
                                 )
                                 self._warn_if_hevc_on_webrtc(guess)
-                        self._fanout(self._sub_v_qs, payload, video=True)
+                        self._publish_video(self._sub_v_qs, payload)
                         if time.monotonic() >= next_v_log:
                             _LOGGER.info(
                                 "Hp7StreamRelay: broadcast video progress %d B "
@@ -1648,36 +1821,16 @@ class Hp7StreamRelay:
 
         # Subscribe to the broadcast. LAN serves one muxed MPEG-PS feed;
         # cloud serves split video/audio PES streams.
-        lan = self._active_lan
+        # "lan" here means "MPEG-PS passthrough": the LAN source, or a
+        # peephole on the cloud (see _broadcast_reader).
+        lan = self._active_lan or self.peephole
         # Preload the cached GOP (#37) so this viewer starts painting from
         # the last keyframe immediately instead of sitting blank until the
         # doorbell emits the next one (tens of seconds on a quiet scene).
         # Preload BEFORE subscribing: chunks land in order ahead of the live
         # feed; a queue.Full mid-preload truncates the replay and the viewer
         # just falls back to waiting for the next keyframe.
-        gop = self._gop_snapshot()
-        if lan:
-            for chunk in gop:
-                try:
-                    raw_q.put_nowait(chunk)
-                except queue.Full:
-                    break
-            now0 = time.monotonic()
-            self._q_last_drain[id(raw_q)] = now0
-            self._q_last_drain[id(a_q)] = now0
-            self._sub_raw_qs.append(raw_q)
-            self._sub_a_qs.append(a_q)  # de-mislabelled AAC audio
-        else:
-            for chunk in gop:
-                try:
-                    v_q.put_nowait(chunk)
-                except queue.Full:
-                    break
-            now0 = time.monotonic()
-            self._q_last_drain[id(v_q)] = now0
-            self._q_last_drain[id(a_q)] = now0
-            self._sub_v_qs.append(v_q)
-            self._sub_a_qs.append(a_q)
+        gop = self._subscribe(lan, raw_q, v_q, a_q)
         if gop:
             _LOGGER.debug(
                 "Hp7StreamRelay: preloaded %d GOP chunks to new client",
@@ -1715,9 +1868,10 @@ class Hp7StreamRelay:
                 # clean and stable and revisit audio once the real codec is
                 # identified from a capture.
                 raw_port = _free_local_port()
-                a_port = _free_local_port()
                 raw_listener = _start_local_listener(raw_port)
-                a_listener = _start_local_listener(a_port)
+                if not self.peephole:
+                    a_port = _free_local_port()
+                    a_listener = _start_local_listener(a_port)
                 # Transcode HEVC -> H.264 so HA's WebRTC path shows a picture
                 # (HEVC copy = grey screen / decoder errors, #36 hehsni, #37
                 # Quenbo CP7). Transcode when the user forces hevc OR when
@@ -1735,6 +1889,9 @@ class Hp7StreamRelay:
                         self._video_codec == "auto"
                         and self._detected_codec == "hevc"
                     )
+                    # Peepholes stream HEVC; the first viewer can connect
+                    # before a chunk has been sniffed, so don't wait for it.
+                    or self.peephole
                 )
                 cmd = [
                     self._ffmpeg_path,
@@ -1746,7 +1903,24 @@ class Hp7StreamRelay:
                     # #39 HPD7). A large analyzeduration/probesize is a ceiling,
                     # not a fixed wait — it starts as soon as params are known.
                     "-fflags", "+genpts", "-flags", "low_delay",
-                    "-analyzeduration", "10000000", "-probesize", "10000000",
+                    # Every viewer on this path starts on a stream map +
+                    # keyframe with its parameter sets (the CPD7 decoder only
+                    # emits from a keyframe, peephole sessions resync at the
+                    # program stream map, later viewers get the cached GOP),
+                    # so the probe window is mostly waiting.
+                    # Peepholes: minimal probing (small HEVC/H.264 frames).
+                    # Everyone else: 0.2 s, but a full 1 MB byte budget, so a
+                    # large HEVC IDR is always read whole before ffmpeg stops
+                    # probing (#39: a tiny probesize cut it off and the frame
+                    # size stayed unknown). Measured on an HP5 local capture at
+                    # real-time pace: first output 1.39 s at 1 s / 1 MB,
+                    # 0.58 s at 0.2 s / 1 MB; same output, and HA's stream
+                    # worker reads it identically (1280x720 + AAC).
+                    *(
+                        ["-analyzeduration", "0", "-probesize", "4096"]
+                        if self.peephole
+                        else ["-analyzeduration", "200000", "-probesize", "1000000"]
+                    ),
                     # NO wall-clock re-timestamping on this input. It is a
                     # real MPEG-PS container that already carries correct
                     # timestamps; stamping by arrival instead collapses the
@@ -1762,36 +1936,74 @@ class Hp7StreamRelay:
                     # on the cloud path, which genuinely have no timestamps.
                     "-f", "mpeg",
                     "-i", f"tcp://127.0.0.1:{raw_port}",
-                    "-analyzeduration", "200000", "-probesize", "200000",
-                    *wallclock,
-                    "-f", "aac",
-                    "-i", f"tcp://127.0.0.1:{a_port}",
-                    # Video from the raw MPEG-PS input (its mislabelled MP2
-                    # audio is ignored, not mapped); audio from the extracted
-                    # AAC input.
-                    "-map", "0:v:0", "-map", "1:a:0",
                 ]
+                if self.peephole:
+                    cmd += ["-map", "0:v:0"]  # video only, no audio track
+                    if self.silent_audio:
+                        cmd += SILENT_AUDIO
+                else:
+                    cmd += [
+                        "-analyzeduration", "200000", "-probesize", "200000",
+                        *wallclock,
+                        "-f", "aac",
+                        "-i", f"tcp://127.0.0.1:{a_port}",
+                        # Video from the raw MPEG-PS input (its mislabelled MP2
+                        # audio is ignored, not mapped); audio from the
+                        # extracted AAC input.
+                        "-map", "0:v:0", "-map", "1:a:0",
+                    ]
                 if lan_transcode:
                     cmd += [
                         "-c:v", "libx264",
                         "-preset", "ultrafast", "-tune", "zerolatency",
                         "-pix_fmt", "yuv420p",
                     ]
+                    if self.peephole:
+                        # A keyframe every second: HLS players (casting) can
+                        # only start on one, and x264's default interval is
+                        # 250 frames (~16 s at 15 fps).
+                        cmd += ["-force_key_frames", "expr:gte(t,n_forced*1)"]
+                        # Explicit level. The MPEG-PS input has a 90 kHz time
+                        # base and no fixed frame rate, so x264 derives the
+                        # level from that and signals 6.2. Phones and browsers
+                        # ignore it; Cast receivers (Nest Hub, Chromecast)
+                        # refuse to load a level they don't support. 4.1 covers
+                        # 1080p at 30 fps, above what peepholes send.
+                        cmd += ["-level:v", "4.1"]
                 else:
                     cmd += ["-c:v", "copy"]
+                if not self.peephole:
+                    cmd += ["-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k"]
                 cmd += [
-                    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                     "-max_interleave_delta", "0",
                     "-mpegts_flags", "+resend_headers",
                     "-pat_period", "1",
                     "-sdt_period", "1",
                     "-f", "mpegts", "pipe:1",
                 ]
+                if self.peephole and lan_transcode and self.last_frame_path:
+                    # Second output of the same (already decoding) process:
+                    # the latest frame every 2 s, renamed into place so a
+                    # reader never sees a half-written file. "-y": the file
+                    # normally exists already, and without it ffmpeg asks to
+                    # overwrite, gets no answer (no tty) and exits before
+                    # producing any output at all.
+                    cmd.insert(1, "-y")
+                    cmd += [
+                        "-map", "0:v:0",
+                        "-vf", "fps=1/2",
+                        "-q:v", "5",
+                        "-f", "image2",
+                        "-update", "1",
+                        "-atomic_writing", "1",
+                        self.last_frame_path,
+                    ]
             else:
                 v_port = _free_local_port()
-                a_port = _free_local_port()
                 v_listener = _start_local_listener(v_port)
-                a_listener = _start_local_listener(a_port)
+                if not self.peephole:
+                    a_port = _free_local_port()
+                    a_listener = _start_local_listener(a_port)
 
                 # Resolve the input codec + whether to transcode.
                 #   h264       -> input h264, copy
@@ -1806,6 +2018,8 @@ class Hp7StreamRelay:
                     cfg = "h264"
                 in_is_hevc = cfg in ("hevc", "hevc_copy")
                 transcode = cfg == "hevc"
+                if self.peephole and self._stream_mode != "webrtc":
+                    transcode = False  # the MJPEG ffmpeg decodes HEVC itself
                 in_fmt = "hevc" if in_is_hevc else "h264"
 
                 cmd = [
@@ -1816,12 +2030,19 @@ class Hp7StreamRelay:
                     *wallclock,
                     "-f", in_fmt, "-r", "15",
                     "-i", f"tcp://127.0.0.1:{v_port}",
-                    "-analyzeduration", "200000", "-probesize", "200000",
-                    *wallclock,
-                    "-f", "aac",
-                    "-i", f"tcp://127.0.0.1:{a_port}",
-                    "-map", "0:v:0", "-map", "1:a:0",
                 ]
+                if self.peephole:
+                    cmd += ["-map", "0:v:0"]
+                    if self.silent_audio:
+                        cmd += SILENT_AUDIO
+                else:
+                    cmd += [
+                        "-analyzeduration", "200000", "-probesize", "200000",
+                        *wallclock,
+                        "-f", "aac",
+                        "-i", f"tcp://127.0.0.1:{a_port}",
+                        "-map", "0:v:0", "-map", "1:a:0",
+                    ]
                 if transcode:
                     # HEVC->H.264: HA's go2rtc/WebRTC path can't hand H.265 to
                     # most browsers, so a copy leaves a grey screen (#36, #37).
@@ -1834,12 +2055,13 @@ class Hp7StreamRelay:
                     ]
                 else:
                     cmd += ["-c:v", "copy"]
-                cmd += [
-                    # Re-encode audio so the mpegts muxer gets a proper AAC
-                    # AudioSpecificConfig extradata (inbound ADTS strips it).
-                    "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
-                    "-max_interleave_delta", "0",
-                ]
+                if not self.peephole:
+                    cmd += [
+                        # Re-encode audio so the mpegts muxer gets a proper AAC
+                        # AudioSpecificConfig extradata (inbound ADTS strips it).
+                        "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+                    ]
+                cmd += ["-max_interleave_delta", "0"]
                 # Opt-in: re-prepend SPS/PPS in front of every IDR for
                 # firmwares that only emit them at the first IDR (#33).
                 # Skipped on transcode (libx264 already inlines them).
@@ -1883,13 +2105,15 @@ class Hp7StreamRelay:
                     name=f"hp7-lan-send-{self._serial}",
                     daemon=True,
                 )
-                a_sender_t = threading.Thread(
-                    target=_sender_thread,
-                    args=(a_listener, a_q, stop_event, "audio", _mk_drain(self._q_last_drain, a_q)),
-                    name=f"hp7-lan-asend-{self._serial}",
-                    daemon=True,
-                )
-                threads = [raw_sender_t, a_sender_t]
+                threads = [raw_sender_t]
+                if a_listener is not None:
+                    threads.append(threading.Thread(
+                        target=_sender_thread,
+                        args=(a_listener, a_q, stop_event, "audio", _mk_drain(self._q_last_drain, a_q)),
+                        kwargs={"drop_backlog": True},
+                        name=f"hp7-lan-asend-{self._serial}",
+                        daemon=True,
+                    ))
             else:
                 v_sender_t = threading.Thread(
                     target=_sender_thread,
@@ -1897,13 +2121,15 @@ class Hp7StreamRelay:
                     name=f"hp7-vtm-vsend-{self._serial}",
                     daemon=True,
                 )
-                a_sender_t = threading.Thread(
-                    target=_sender_thread,
-                    args=(a_listener, a_q, stop_event, "audio", _mk_drain(self._q_last_drain, a_q)),
-                    name=f"hp7-vtm-asend-{self._serial}",
-                    daemon=True,
-                )
-                threads = [v_sender_t, a_sender_t]
+                threads = [v_sender_t]
+                if a_listener is not None:
+                    threads.append(threading.Thread(
+                        target=_sender_thread,
+                        args=(a_listener, a_q, stop_event, "audio", _mk_drain(self._q_last_drain, a_q)),
+                        kwargs={"drop_backlog": True},
+                        name=f"hp7-vtm-asend-{self._serial}",
+                        daemon=True,
+                    ))
             for t in threads:
                 t.start()
 
@@ -1989,6 +2215,50 @@ class Hp7StreamRelay:
             _LOGGER.debug("Hp7StreamRelay: client %s closed", peer)
 
 
+def _jpeg_from_part(part: bytes) -> bytes | None:
+    """Cut the JPEG out of one multipart MJPEG part (boundary + headers)."""
+    start = part.find(b"\xff\xd8")
+    end = part.rfind(b"\xff\xd9")
+    if start < 0 or end <= start:
+        return None
+    return part[start : end + 2]
+
+
+def _read_last_frame(path: str) -> tuple[bytes, float] | None:
+    import os
+
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return (data, os.path.getmtime(path)) if data else None
+    except OSError:
+        return None
+
+
+def _read_last_frame_if_newer(path: str, since: float) -> tuple[bytes, float] | None:
+    import os
+
+    try:
+        if os.path.getmtime(path) <= since:
+            return None
+    except OSError:
+        return None
+    return _read_last_frame(path)
+
+
+def _write_last_frame(path: str, data: bytes) -> None:
+    import os
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except OSError as exc:
+        _LOGGER.debug("Hp7LiveCamera: could not store last frame: %s", exc)
+
+
 class Hp7LiveCamera(Camera):
     """Live H.264 + AAC stream from the HP7/CP7 via the VTM cloud relay."""
 
@@ -2002,6 +2272,8 @@ class Hp7LiveCamera(Camera):
         relay: Hp7StreamRelay,
         stream_mode: str = "mjpeg",
         ffmpeg_path: str = "ffmpeg",
+        last_frame_path: str | None = None,
+        key: str = "live",
     ) -> None:
         super().__init__()
         self._serial = serial
@@ -2009,7 +2281,43 @@ class Hp7LiveCamera(Camera):
         self._relay = relay
         self._stream_mode = (stream_mode or "mjpeg").lower()
         self._ffmpeg_path = ffmpeg_path
-        self._attr_unique_id = f"{DOMAIN}_{serial}_live"
+        # "live" (main camera) or "live_sub" (opt-in sub-stream camera).
+        self._attr_unique_id = f"{DOMAIN}_{serial}_{key}"
+        self._attr_translation_key = key
+        # Battery peepholes: stills never open a stream. Instead the last
+        # frame of the most recent live view is kept (in memory and on disk,
+        # so it survives restarts) and served as the still, like the EZVIZ
+        # app's thumbnail. None for every other device.
+        self._last_frame_path = last_frame_path
+        self._last_frame: bytes | None = None
+        self._last_frame_at: float | None = None
+        self._session_frame: bytes | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self._last_frame_path and self.hass is not None:
+            loaded = await self.hass.async_add_executor_job(
+                _read_last_frame, self._last_frame_path
+            )
+            if loaded is not None:
+                self._last_frame, self._last_frame_at = loaded
+
+    def _capture_frame(self, part: bytes) -> None:
+        """MJPEG hook: remember the newest frame sent during this view."""
+        self._session_frame = part
+
+    async def _store_session_frame(self) -> None:
+        part, self._session_frame = self._session_frame, None
+        jpeg = _jpeg_from_part(part) if part else None
+        if not jpeg:
+            return
+        self._last_frame = jpeg
+        self._last_frame_at = time.time()
+        if self._last_frame_path and self.hass is not None:
+            await self.hass.async_add_executor_job(
+                _write_last_frame, self._last_frame_path, jpeg
+            )
+        self.async_write_ha_state()
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -2040,11 +2348,20 @@ class Hp7LiveCamera(Camera):
         if not codec:
             cfg = self._relay._video_codec
             codec = cfg if cfg and cfg != "auto" else "unknown"
-        return {
+        attrs = {
             "stream_source": self._relay.active_source,
             "stream_mode": self._stream_mode,
             "video_codec": codec,
         }
+        if self._last_frame_path is not None:
+            from datetime import datetime, timezone
+
+            attrs["last_frame_at"] = (
+                datetime.fromtimestamp(self._last_frame_at, timezone.utc).isoformat()
+                if self._last_frame_at
+                else None
+            )
+        return attrs
 
     async def stream_source(self) -> Optional[str]:
         if self._stream_mode == "mjpeg":
@@ -2073,11 +2390,25 @@ class Hp7LiveCamera(Camera):
             return None
         from .mjpeg import serve_mjpeg
 
-        return await serve_mjpeg(
-            request,
-            ffmpeg_path=self._ffmpeg_path,
-            upstream_url=self._relay.stream_url,
-        )
+        if self._last_frame_path is None:
+            return await serve_mjpeg(
+                request,
+                ffmpeg_path=self._ffmpeg_path,
+                upstream_url=self._relay.stream_url,
+            )
+        try:
+            # The relay hands peephole viewers a stream that starts on
+            # parameter sets + IDR, so probing can end almost immediately.
+            return await serve_mjpeg(
+                request,
+                ffmpeg_path=self._ffmpeg_path,
+                upstream_url=self._relay.stream_url,
+                on_frame=self._capture_frame,
+                analyzeduration=0,
+                probesize=4096,
+            )
+        finally:
+            await self._store_session_frame()
 
     async def async_camera_image(
         self,
@@ -2092,7 +2423,24 @@ class Hp7LiveCamera(Camera):
         TCP relay (`-frames:v 1 -f image2`) to grab a single JPEG. The
         active VTM session served by the relay is reused, so we don't open
         a second cloud session just for a thumbnail.
+
+        Battery peepholes never do that: a dashboard tile asks for a still
+        every few seconds, and each grab would wake the device. They return
+        the last frame of the most recent live view instead (None until the
+        first view).
         """
+        if self._last_frame_path is not None:
+            # In WebRTC mode the relay's conversion writes the file; in MJPEG
+            # mode this entity does. Pick up whichever is newer.
+            if self.hass is not None:
+                loaded = await self.hass.async_add_executor_job(
+                    _read_last_frame_if_newer,
+                    self._last_frame_path,
+                    self._last_frame_at or 0.0,
+                )
+                if loaded is not None:
+                    self._last_frame, self._last_frame_at = loaded
+            return self._last_frame
         if self._relay.port == 0:
             return None
         url = self._relay.stream_url
@@ -2107,6 +2455,14 @@ class Hp7LiveCamera(Camera):
                 "+nobuffer",
                 "-flags",
                 "low_delay",
+                # The relay starts every client on the cached keyframe with
+                # its parameter sets; with ffmpeg's default 5 s analysis a
+                # grab took ~8 s (measured ~7.9 s vs ~4 s with these limits
+                # against relay output at real-time pace).
+                "-analyzeduration",
+                "1000000",
+                "-probesize",
+                "1000000",
                 "-i",
                 url,
                 "-frames:v",
@@ -2163,9 +2519,17 @@ async def async_setup_live_entities(
         stream_mode=stream_mode,
         stream_quality=str(data.get("stream_quality") or "main"),
         diagnostic_dumps=bool(data.get("diagnostic_dumps", False)),
+        silent_audio=bool(data.get("silent_audio", True)),
         encryption_key=str(data.get("encryption_key") or ""),
         hass=hass,
     )
+    cateye = bool(data.get("cateye"))
+    if cateye:
+        from .const import CATEYE_IDLE_TIMEOUT
+
+        # Close the cloud session as soon as the last viewer leaves.
+        relay.idle_timeout = CATEYE_IDLE_TIMEOUT
+        relay.peephole = True
     await relay.start()
     data["live_relay"] = relay
     # Let the coordinator see the relay so it can back polling off while
@@ -2197,9 +2561,74 @@ async def async_setup_live_entities(
         except Exception:  # noqa: BLE001
             pass
 
-    async_add_entities(
-        [Hp7LiveCamera(serial, model, relay, stream_mode=effective_mode)]
+    last_frame_path = (
+        hass.config.path(".storage", DOMAIN, f"{serial}_last_frame.jpg")
+        if cateye
+        else None
     )
+    if last_frame_path:
+        import os
+
+        await hass.async_add_executor_job(
+            lambda: os.makedirs(os.path.dirname(last_frame_path), exist_ok=True)
+        )
+        relay.last_frame_path = last_frame_path
+    cameras = [
+        Hp7LiveCamera(
+            serial,
+            model,
+            relay,
+            stream_mode=effective_mode,
+            last_frame_path=last_frame_path,
+        )
+    ]
+
+    if data.get("sub_camera"):
+        # Opt-in second camera on the sub-stream: its own relay (own port,
+        # own cloud/LAN session, opened only while it is viewed), its own
+        # last-frame file, and either the main camera's resolved delivery
+        # mode ("same", no second codec probe) or its own.
+        sub_mode = str(data.get("sub_stream_mode") or "same")
+        if sub_mode not in ("webrtc", "mjpeg"):
+            sub_mode = effective_mode
+        sub_relay = Hp7StreamRelay(
+            api=api,
+            serial=serial,
+            channel=1,
+            listen_port=0,
+            bind_host=str(data.get("relay_bind") or "127.0.0.1"),
+            aggressive_mpegts=aggressive_mpegts,
+            video_codec=video_codec,
+            stream_source=stream_source,
+            stream_mode=sub_mode,
+            stream_quality="sub",
+            diagnostic_dumps=False,
+            silent_audio=bool(data.get("silent_audio", True)),
+            encryption_key=str(data.get("encryption_key") or ""),
+            hass=hass,
+        )
+        sub_last_frame_path = None
+        if cateye:
+            sub_relay.idle_timeout = CATEYE_IDLE_TIMEOUT
+            sub_relay.peephole = True
+            sub_last_frame_path = hass.config.path(
+                ".storage", DOMAIN, f"{serial}_sub_last_frame.jpg"
+            )
+            sub_relay.last_frame_path = sub_last_frame_path
+        await sub_relay.start()
+        data["live_relay_sub"] = sub_relay
+        cameras.append(
+            Hp7LiveCamera(
+                serial,
+                model,
+                sub_relay,
+                stream_mode=sub_mode,
+                last_frame_path=sub_last_frame_path,
+                key="live_sub",
+            )
+        )
+
+    async_add_entities(cameras)
 
 
 async def _resolve_auto_stream_mode(relay: "Hp7StreamRelay") -> str:
@@ -2242,3 +2671,6 @@ async def async_unload_live_entities(
     relay: Optional[Hp7StreamRelay] = data.pop("live_relay", None)
     if relay is not None:
         await relay.stop()
+    sub_relay: Optional[Hp7StreamRelay] = data.pop("live_relay_sub", None)
+    if sub_relay is not None:
+        await sub_relay.stop()
