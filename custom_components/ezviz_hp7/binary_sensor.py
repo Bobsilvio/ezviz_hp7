@@ -418,12 +418,21 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
             self.async_write_ha_state()
             return
 
-        if (
-            self._alarm_matches(current_alarm)
-            and current_alarm_time is not None
-            and current_alarm_time != self._prev_alarm_time
-        ):
+        # Pulse only on an alarm newer than any seen, of any type. The cloud
+        # now and then reports an older ring as the last alarm for one poll;
+        # `!=` against this sensor's own last match turned that into a phantom
+        # ring whenever the replayed one wasn't it (after a restart, or a ring
+        # hidden by a newer alarm within one poll). Times are camera-local
+        # "%Y-%m-%d %H:%M:%S", so string order is time order (bar the DST
+        # fall-back hour).
+        newer = current_alarm_time is not None and (
+            self._prev_alarm_time is None
+            or current_alarm_time > self._prev_alarm_time
+        )
+        if newer:
             self._prev_alarm_time = current_alarm_time
+
+        if self._alarm_matches(current_alarm) and newer:
             self._last_trigger = dt_util.utcnow()
             self._schedule_state_update()
             _LOGGER.debug(
