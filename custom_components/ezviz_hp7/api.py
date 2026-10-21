@@ -21,6 +21,10 @@ DEFAULT_GATE_LOCK_NO = 1
 # How long a fetched ChimeMusic blob stays valid. Must be > the coordinator
 # poll interval so consecutive ticks reuse it (#44).
 CHIME_CACHE_TTL = 60.0
+# Spacing between token re-login attempts once the client has lost its token,
+# so a sustained cloud outage doesn't turn into a login on every 15 s poll —
+# the rate-limit risk the coordinator's single-shot force_relogin avoids.
+TOKEN_RELOGIN_BACKOFF = 300.0
 
 REGION_URLS: dict[str, str] = {
     "eu": "apiieu.ezvizlife.com",
@@ -55,6 +59,8 @@ class Hp7Api:
         self._region = region
         self._token = token
         self._client: EzvizClient | None = None
+        # Monotonic deadline gating the tokenless re-login in ensure_client.
+        self._token_relogin_after: float = 0.0
         self._url = REGION_URLS.get(region, REGION_URLS["eu"])
         self.supports_door = True
         self.supports_gate = True
@@ -111,7 +117,24 @@ class Hp7Api:
         Raises:
             RuntimeError: If client initialization fails.
         """
+        if self._client and self._token:
+            return
+
         if self._client:
+            # Client without a token: force_relogin() cleared _token, then the
+            # login inside this method raised *after* _client was assigned, and
+            # the old `if self._client: return` made that permanent — unlock and
+            # snapshots dead (silently: _try_unlock logs nothing) until a restart,
+            # while polling kept working off the client's own session. Retry just
+            # the login, spaced out, and keep the client on failure so polling is
+            # unaffected (#59).
+            if time.monotonic() < self._token_relogin_after:
+                return
+            self._token_relogin_after = time.monotonic() + TOKEN_RELOGIN_BACKOFF
+            try:
+                self._login_and_store_token()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning("EZVIZ HP7: token re-login failed: %s", exc)
             return
 
         try:
