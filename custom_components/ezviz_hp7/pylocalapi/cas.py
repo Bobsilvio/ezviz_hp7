@@ -315,16 +315,26 @@ def _build_operation_code_request(
     devserial: str,
     hardware_code: str = FEATURE_CODE,
     client_type: int = CAS_ANDROID_CLIENT_TYPE,
+    url: str | None = None,
 ) -> bytes:
-    """Build the observed get-operation-code CAS request."""
-    body = (
-        b'<?xml version="1.0" encoding="utf-8"?>\n<Request>\n\t'
-        + (
-            f"<ClientID>{session_id}</ClientID>"
-            f"\n\t<Sign>{hardware_code}</Sign>\n\t"
-            f"<DevSerial>{devserial}</DevSerial>"
-            f"\n\t<ClientType>{client_type}</ClientType>\n</Request>\n"
-        ).encode("latin1")
+    """Build the observed get-operation-code CAS request.
+
+    When ``url`` is not None the request carries a ``<Url>`` element (the
+    app's DirectConnect variant). Some devices (e.g. the HP7/HPD7 doorbell)
+    only mint a Session + LAN key when that element is present; without it
+    CAS answers Result=1052173 (no Session). An empty string is enough.
+    """
+    inner = (
+        f"<ClientID>{session_id}</ClientID>"
+        f"\n\t<Sign>{hardware_code}</Sign>\n\t"
+        f"<DevSerial>{devserial}</DevSerial>"
+        f"\n\t<ClientType>{client_type}</ClientType>"
+    )
+    if url is not None:
+        inner += f"\n\t<Url>{url}</Url>"
+    inner += "\n</Request>\n"
+    body = b'<?xml version="1.0" encoding="utf-8"?>\n<Request>\n\t' + inner.encode(
+        "latin1"
     )
     return (
         _cas_frame_header(
@@ -508,8 +518,14 @@ class EzvizCAS:
             response=response_bytes,
         )
 
-    def cas_get_encryption(self, devserial: str) -> dict[str, Any]:
-        """Fetch encryption code from EZVIZ CAS server."""
+    def cas_get_encryption(
+        self, devserial: str, *, url: str | None = None
+    ) -> dict[str, Any]:
+        """Fetch encryption code from EZVIZ CAS server.
+
+        Pass ``url`` to send the DirectConnect ``<Url>`` variant (needed by
+        devices that otherwise answer Result=1052173 with no Session).
+        """
         host, port = self._cloud_address()
         result = self._send_cas_payload(
             _build_operation_code_request(
@@ -517,6 +533,7 @@ class EzvizCAS:
                 devserial=devserial,
                 hardware_code=self._hardware_code(),
                 client_type=self._client_type,
+                url=url,
             ),
             host=host,
             port=port,

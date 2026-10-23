@@ -322,13 +322,24 @@ class Hp7Api:
             raise RuntimeError("EZVIZ client not initialised for LAN key fetch")
 
         self._p2p_register()
+        cas = EzvizCAS(self._client.export_token())
         try:
-            info = EzvizCAS(self._client.export_token()).cas_get_encryption(bare)
+            info = cas.cas_get_encryption(bare)
+            session = (info or {}).get("Response", {}).get("Session", {})
+            key_str = str(session.get("@Key") or "")
+            if len(key_str) != 16:
+                # DirectConnect fallback: some devices (e.g. the HP7/HPD7
+                # doorbell) only mint a Session when the request carries a
+                # <Url> element. Result=1052173 = no-Session on the plain
+                # request. Retry with the device's streaming ticket as <Url>.
+                info = cas.cas_get_encryption(
+                    bare, url=self._direct_connect_url(bare)
+                )
+                session = (info or {}).get("Response", {}).get("Session", {})
+                key_str = str(session.get("@Key") or "")
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"CAS get-encryption failed: {exc}") from exc
 
-        session = (info or {}).get("Response", {}).get("Session", {})
-        key_str = str(session.get("@Key") or "")
         if len(key_str) != 16:
             result = str((info or {}).get("Response", {}).get("Result"))
             # 1052175 (and friends): CAS accepts the request but refuses to
@@ -350,6 +361,20 @@ class Hp7Api:
         key_bytes = key_str.encode("ascii")
         self._lan_aes_cache[bare] = (key_bytes, time.monotonic())
         return key_bytes
+
+    def _direct_connect_url(self, bare: str) -> str:
+        """Streaming-ticket URL for the CAS DirectConnect ``<Url>`` element.
+
+        Falls back to an empty string, which still triggers the Session on
+        devices that need the element (CAS does not validate its content).
+        """
+        try:
+            resp = self._client._request_json(  # noqa: SLF001
+                "GET", f"/v3/streaming/ticket/{bare}/1"
+            )
+            return str((resp or {}).get("ticket") or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
     def invalidate_lan_aes_key(self, serial: str | None = None) -> None:
         """Drop cached LAN AES key(s); call when decrypt fails (re-pair)."""
