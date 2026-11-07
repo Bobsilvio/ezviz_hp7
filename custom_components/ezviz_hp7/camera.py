@@ -13,7 +13,9 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
 
-from .const import DOMAIN
+from .const import CONF_ENCRYPTION_KEY, DOMAIN
+from .pylocalapi.constants import HIK_ENCRYPTION_HEADER
+from .pylocalapi.utils import decrypt_image
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -41,7 +43,7 @@ async def async_setup_entry(
 
 
     async_add_entities(
-        [Hp7LastSnapshotCamera(hass, coordinator, serial, model)]
+        [Hp7LastSnapshotCamera(hass, coordinator, serial, model, entry)]
     )
 
     # Live H.264 stream via the VTM cloud relay (Renier pylocalapi).
@@ -72,6 +74,7 @@ class Hp7LastSnapshotCamera(Camera, CoordinatorEntity):
         coordinator: Hp7Coordinator,
         serial: str,
         model: str,
+        entry: ConfigEntry | None = None,
     ) -> None:
         """Initialize camera entity.
 
@@ -86,7 +89,15 @@ class Hp7LastSnapshotCamera(Camera, CoordinatorEntity):
         self.hass = hass
         self._serial = serial
         self._model = model
+        self._entry = entry
         self._attr_unique_id = f"{DOMAIN}_{serial}_last_snapshot"
+
+    def _encryption_key(self) -> str:
+        """Return the configured image/video encryption key ("" if unset)."""
+        if self._entry is None:
+            return ""
+        merged = {**self._entry.data, **self._entry.options}
+        return str(merged.get(CONF_ENCRYPTION_KEY) or "").strip()
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -140,7 +151,31 @@ class Hp7LastSnapshotCamera(Camera, CoordinatorEntity):
             async with session.get(url, headers=headers, timeout=15) as resp:
                 # Check response status
                 if resp.status == 200:
-                    return await resp.read()
+                    data = await resp.read()
+                    if HIK_ENCRYPTION_HEADER not in data:
+                        return data
+                    # Alarm snapshot is encrypted (picCrypt=1): decrypt it
+                    # with the configured key instead of returning raw
+                    # "hikencodepicture" bytes the browser cannot display.
+                    key = self._encryption_key()
+                    if not key:
+                        _LOGGER.warning(
+                            "Snapshot for %s is encrypted but no encryption "
+                            "key is configured",
+                            self._serial,
+                        )
+                        return None
+                    try:
+                        return await self.hass.async_add_executor_job(
+                            decrypt_image, data, key
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "Could not decrypt snapshot for %s: %s",
+                            self._serial,
+                            exc,
+                        )
+                        return None
                 
                 # Log error for debugging
                 try:
