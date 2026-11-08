@@ -277,5 +277,13 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "unlock_door_failed": {
+      "message": "Nie udało się otworzyć drzwi. Sprawdź połączenie z chmurą EZVIZ; przyczynę znajdziesz w dzienniku Home Assistant."
+    },
+    "unlock_gate_failed": {
+      "message": "Nie udało się otworzyć bramy. Sprawdź połączenie z chmurą EZVIZ; przyczynę znajdziesz w dzienniku Home Assistant."
+    }
   }
 }

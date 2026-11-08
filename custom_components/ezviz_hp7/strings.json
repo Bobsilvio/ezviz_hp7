@@ -277,5 +277,13 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "unlock_door_failed": {
+      "message": "Unlocking the door failed. Check the EZVIZ cloud connection; the Home Assistant log has the reason."
+    },
+    "unlock_gate_failed": {
+      "message": "Unlocking the gate failed. Check the EZVIZ cloud connection; the Home Assistant log has the reason."
+    }
   }
 }

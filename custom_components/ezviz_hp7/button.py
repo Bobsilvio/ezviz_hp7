@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.config_entries import ConfigEntry
@@ -103,5 +104,15 @@ class EzvizHp7Button(ButtonEntity):
 
         if success:
             _LOGGER.info("EZVIZ HP7: %s successful", log_msg)
-        else:
-            _LOGGER.error("EZVIZ HP7: %s failed", log_msg)
+            return
+        _LOGGER.error("EZVIZ HP7: %s failed", log_msg)
+        # Raise so the failure reaches the caller: the dashboard shows it, and
+        # a script or automation that pressed the button stops (or handles it
+        # with continue_on_error) instead of carrying on as if it opened.
+        # Keys: exceptions.unlock_gate_failed / unlock_door_failed in
+        # strings.json and every translations/*.json. A new action needs its
+        # own "<action>_failed" entry there.
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key=f"{self._action}_failed",
+        )

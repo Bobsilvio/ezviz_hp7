@@ -277,5 +277,13 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "unlock_door_failed": {
+      "message": "Impossible d'ouvrir le portillon. Vérifiez la connexion au cloud EZVIZ ; la cause figure dans le journal de Home Assistant."
+    },
+    "unlock_gate_failed": {
+      "message": "Impossible d'ouvrir le portail. Vérifiez la connexion au cloud EZVIZ ; la cause figure dans le journal de Home Assistant."
+    }
   }
 }

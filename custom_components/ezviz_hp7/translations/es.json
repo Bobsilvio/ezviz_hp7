@@ -277,5 +277,13 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "unlock_door_failed": {
+      "message": "No se pudo desbloquear la puerta. Comprueba la conexión con la nube de EZVIZ; el motivo está en el registro de Home Assistant."
+    },
+    "unlock_gate_failed": {
+      "message": "No se pudo desbloquear el portón. Comprueba la conexión con la nube de EZVIZ; el motivo está en el registro de Home Assistant."
+    }
   }
 }

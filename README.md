@@ -375,6 +375,7 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 | A switch flips back a few seconds after you toggle it | The cloud reports the old state briefly | Fixed in 0.13.21 (the switch holds your value during a grace window) |
 | Unlock sensors fire on every Home Assistant restart | The cloud always reports the *last* alarm, which looked new at startup | Fixed in 0.15.1 |
 | Live view takes 20-30 s to appear | The viewer had to wait for the doorbell's next keyframe | Fixed in 0.13.21 — the relay replays the stream since the last keyframe to each new viewer |
+| The unlock button shows an error, or a script stops at the unlock step | The EZVIZ cloud refused the unlock, or there is no cloud session. The log line `Remote unlock skipped` or `Remote unlock failed` gives the reason | Since the next release a failed unlock raises an error instead of failing silently. If the log says `no EZVIZ cloud token`, reload the integration. In a script that must carry on regardless, add `continue_on_error: true` to the press step |
 
 **When opening an issue,** these four things make it solvable quickly: the **integration version**, the **device model**, your **Configure settings** (stream source / mode / codec), and the log lines. Enable debug logging first — Settings → Devices & Services → EZVIZ HP7 / CP7 → ⋮ → **Enable debug logging** — then reproduce, and paste the lines mentioning `ezviz_hp7`. The relay's own progress line is especially informative:
 
@@ -420,6 +421,8 @@ To add a language, copy `custom_components/ezviz_hp7/translations/en.json` to `<
 ## 🤝 Contributing
 
 Pull requests and issues welcome. Open an [issue](../../issues) for bugs or feature requests.
+
+To run the tests: `pip install -r requirements_test.txt`, then `pytest` from the repository root.
 
 This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi), vendored locally under `custom_components/ezviz_hp7/pylocalapi/` to pin the version and avoid breaking changes from upstream releases.
 
