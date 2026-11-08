@@ -372,6 +372,7 @@ Most reports fall into a handful of patterns. Start here before opening an issue
 | Log says `decrypting it with the camera key` but the picture is still black | The key is being used but is the wrong material for your firmware | Fetch the real key from the cloud with `ezviz_hp7.fetch_encryption_key` (needs a one-time password) — see [Encrypted streams](#encrypted-streams) |
 | `CAS get-encryption failed` / `Result=1052170` / `1052175` | The device won't hand out a LAN key | Encryption **OFF** first. If it persists, your firmware may not support the LAN path at all — see the support table above and use `cloud` |
 | All entities go `unknown` / `unavailable`, sometimes for hours | Transient EZVIZ cloud 504s, or an expired session on an old version | Update: since 0.13.11 the coordinator keeps last-known values through a ~1 min grace window and re-logins automatically. Also **remove any "reload the integration" automation** — it makes outages longer and can trip rate limits |
+| Reload or an options change stays on "unload in progress" while a live view or Frigate is connected | The stream relay waited for every connected viewer to hang up, and a viewer that keeps reading never does | Fixed in the next release: on unload the relay closes its viewers and gives up after a few seconds. Until then, restart Home Assistant |
 | A switch flips back a few seconds after you toggle it | The cloud reports the old state briefly | Fixed in 0.13.21 (the switch holds your value during a grace window) |
 | Unlock sensors fire on every Home Assistant restart | The cloud always reports the *last* alarm, which looked new at startup | Fixed in 0.15.1 |
 | Live view takes 20-30 s to appear | The viewer had to wait for the doorbell's next keyframe | Fixed in 0.13.21 — the relay replays the stream since the last keyframe to each new viewer |
@@ -420,6 +421,8 @@ To add a language, copy `custom_components/ezviz_hp7/translations/en.json` to `<
 ## 🤝 Contributing
 
 Pull requests and issues welcome. Open an [issue](../../issues) for bugs or feature requests.
+
+To run the tests: `pip install -r requirements_test.txt`, then `pytest` from the repository root.
 
 This integration uses the EZVIZ API client from [RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi), vendored locally under `custom_components/ezviz_hp7/pylocalapi/` to pin the version and avoid breaking changes from upstream releases.
 
