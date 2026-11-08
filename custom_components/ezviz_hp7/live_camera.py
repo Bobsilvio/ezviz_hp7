@@ -199,6 +199,17 @@ VIDEO_STREAM_ID = 0xE0
 AUDIO_STREAM_ID = 0xC0
 
 FFMPEG_KILL_TIMEOUT = 2.0
+# stop() bounds (#60). After closing the clients' sockets it waits up to
+# RELAY_CLOSE_GRACE for them to end through their own error path, then
+# cancels the rest. Closing the clients and the listener shares one
+# RELAY_STOP_TIMEOUT deadline. Tearing down the shared session caps waiting
+# for its lock and its close at RELAY_SESSION_CLOSE_TIMEOUT each (the lock
+# wait only skips when a session is still opening, so at most one of the two
+# applies), plus a 2 s reader join: about 17 s worst case, inside Home
+# Assistant's shutdown stage budget.
+RELAY_CLOSE_GRACE = 3.0
+RELAY_STOP_TIMEOUT = 10.0
+RELAY_SESSION_CLOSE_TIMEOUT = 5.0
 RELAY_CHUNK = 65536
 PAYLOAD_QUEUE_SIZE = 256
 # Video carries whole MPEG-PS chunks and cannot tolerate gaps the way audio
@@ -638,6 +649,18 @@ class Hp7StreamRelay:
         # builds — #33); breaks the firmwares that already inline them.
         self._aggressive_mpegts = bool(aggressive_mpegts)
         self._server: Optional[asyncio.AbstractServer] = None
+        # Connected clients, so stop() can close them (#60). Since Python
+        # 3.12, Server.wait_closed() waits for every connection to end, and a
+        # consumer that keeps reading (HA's stream worker, an external
+        # go2rtc/Frigate) never ends on its own: without this, unload hangs.
+        self._client_tasks: set[asyncio.Task] = set()
+        self._client_writers: set[asyncio.StreamWriter] = set()
+        # Set while stop() runs, so a connection accepted just before the
+        # listener closed is turned away instead of opening a new session
+        # after the shared one has been torn down.
+        self._stopping = False
+        # Serialises start() and stop().
+        self._lifecycle_lock = asyncio.Lock()
         self._port: int = 0
         self._last_attempt: float = 0.0
         self._last_error: Optional[str] = None
@@ -1167,8 +1190,13 @@ class Hp7StreamRelay:
             _LOGGER.debug("Hp7StreamRelay: could not raise HEVC repair: %s", exc)
 
     async def start(self) -> None:
+        async with self._lifecycle_lock:
+            await self._start()
+
+    async def _start(self) -> None:
         if self._server is not None:
             return
+        self._stopping = False
         # Try the configured fixed port first; fall back to a random free
         # one if it's taken so HA setup doesn't fail when (e.g.) the user
         # left a previous relay running.
@@ -1212,16 +1240,61 @@ class Hp7StreamRelay:
             )
 
     async def stop(self) -> None:
+        async with self._lifecycle_lock:
+            await self._stop()
+
+    async def _stop(self) -> None:
         if self._server is None:
             return
-        self._server.close()
-        try:
-            await self._server.wait_closed()
-        except Exception:
-            pass
+        self._stopping = True
+        server = self._server
         self._server = None
         self._port = 0
-        await self._shutdown_shared()
+        server.close()
+        try:
+            # One deadline for the clients and the listener together, so the
+            # unload stays inside Home Assistant's shutdown budget (#60).
+            async with asyncio.timeout(RELAY_STOP_TIMEOUT):
+                # Close the connected clients before waiting: wait_closed()
+                # would otherwise block until each of them hangs up (#60).
+                await self._close_clients()
+                await server.wait_closed()
+        except TimeoutError:
+            stuck = sum(1 for t in self._client_tasks if not t.done())
+            _LOGGER.warning(
+                "Hp7StreamRelay: %d client(s) did not finish within %.0fs of "
+                "stop (serial=%s); continuing the unload anyway",
+                stuck, RELAY_STOP_TIMEOUT, self._serial,
+            )
+        except Exception:
+            pass
+        finally:
+            # In a finally so the shared session is torn down even if the
+            # unload itself is cancelled while the clients are closing.
+            await self._shutdown_shared()
+
+    async def _close_clients(self) -> None:
+        """Close every connected client and wait for its cleanup.
+
+        Closing the socket first lets a client end through its own error
+        path, which runs its whole cleanup (ffmpeg kill, unsubscribe, thread
+        joins). Only clients still running after a grace period are
+        cancelled: a cancel that lands inside a client's ``finally`` would
+        skip the rest of that cleanup. The caller bounds the total wait.
+        """
+        for writer in list(self._client_writers):
+            try:
+                writer.close()
+            except Exception:
+                pass
+        tasks = [t for t in self._client_tasks if not t.done()]
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(tasks, timeout=RELAY_CLOSE_GRACE)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending)
 
     # ------------------------------------------------------------------
     # Shared VTM pre-warm
@@ -1273,6 +1346,10 @@ class Hp7StreamRelay:
         loop = asyncio.get_event_loop()
         self._loop = loop
         async with self._shared_lock:
+            if self._stopping:
+                # Callers (doorbell events, camera warm-up) can run after
+                # stop(); a session opened now would never be torn down.
+                return
             if self._shared_vtm is not None:
                 self._arm_idle_timer()
                 _LOGGER.debug(
@@ -1297,15 +1374,6 @@ class Hp7StreamRelay:
                     )
                 vtm = await self._open_source(loop, ezviz_client)
                 info = await loop.run_in_executor(None, vtm.start)
-                self._consecutive_failures = 0
-                self._last_error = None
-                self._last_error_offline = False
-                _LOGGER.info(
-                    "Hp7StreamRelay: pre-warm source up (serial=%s src=%s ssn=%s)",
-                    self._serial,
-                    self._stream_source,
-                    getattr(info, "streamssn", "?"),
-                )
             except Exception as exc:
                 self._consecutive_failures += 1
                 self._last_error = str(exc)
@@ -1317,6 +1385,26 @@ class Hp7StreamRelay:
                     self._last_error_offline, self._stream_source, exc,
                 )
                 return
+            if self._stopping:
+                # stop() began during the handshake and did not wait for this
+                # lock (see _shutdown_shared), so close the new session here.
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, vtm.close),
+                        RELAY_SESSION_CLOSE_TIMEOUT,
+                    )
+                except Exception:
+                    pass
+                return
+            self._consecutive_failures = 0
+            self._last_error = None
+            self._last_error_offline = False
+            _LOGGER.info(
+                "Hp7StreamRelay: pre-warm source up (serial=%s src=%s ssn=%s)",
+                self._serial,
+                self._stream_source,
+                getattr(info, "streamssn", "?"),
+            )
             self._shared_vtm = vtm
             self._active_lan = isinstance(
                 vtm, (Cpd7LanSource, _PreStartedSource)
@@ -1337,6 +1425,10 @@ class Hp7StreamRelay:
         if self._active_clients > 0:
             # Don't tear down while clients are connected — they cover us.
             return
+        if self._stopping:
+            # stop() tears the session down itself; a timer armed by a client
+            # closing during stop() would outlive the unload.
+            return
         loop = asyncio.get_event_loop()
         self._idle_handle = loop.call_later(
             PREWARM_IDLE_TIMEOUT, self._idle_expired
@@ -1349,7 +1441,23 @@ class Hp7StreamRelay:
         asyncio.create_task(self._shutdown_shared())
 
     async def _shutdown_shared(self) -> None:
-        async with self._shared_lock:
+        if self._stopping:
+            # prewarm() holds this lock across the cloud handshake, which has
+            # no timeout. While stopping, don't wait on it: the session it is
+            # opening closes itself once it sees _stopping (#60).
+            try:
+                await asyncio.wait_for(
+                    self._shared_lock.acquire(), RELAY_SESSION_CLOSE_TIMEOUT
+                )
+            except TimeoutError:
+                _LOGGER.debug(
+                    "Hp7StreamRelay: a session is still opening (serial=%s); "
+                    "it will close itself", self._serial,
+                )
+                return
+        else:
+            await self._shared_lock.acquire()
+        try:
             vtm = self._shared_vtm
             self._shared_vtm = None
             self._shared_stop.set()
@@ -1362,15 +1470,30 @@ class Hp7StreamRelay:
             if self._idle_handle is not None:
                 self._idle_handle.cancel()
                 self._idle_handle = None
+        finally:
+            self._shared_lock.release()
+        loop = asyncio.get_event_loop()
         if vtm is not None:
-            loop = asyncio.get_event_loop()
             try:
-                await loop.run_in_executor(None, vtm.close)
+                # Bounded so a session close stuck on the network cannot hold
+                # up an unload (#60); the executor job finishes on its own.
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, vtm.close),
+                    RELAY_SESSION_CLOSE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Hp7StreamRelay: shared session close took over %.0fs "
+                    "(serial=%s); not waiting for it",
+                    RELAY_SESSION_CLOSE_TIMEOUT, self._serial,
+                )
             except Exception:
                 pass
-        if self._shared_reader is not None:
-            self._shared_reader.join(timeout=2.0)
+        reader = self._shared_reader
+        if reader is not None:
             self._shared_reader = None
+            # join() blocks, so run it off the event loop.
+            await loop.run_in_executor(None, reader.join, 2.0)
         _LOGGER.debug("Hp7StreamRelay: shared VTM torn down (serial=%s)", self._serial)
 
     async def _handle_reader_exit(self, my_vtm: Any) -> None:
@@ -1596,6 +1719,31 @@ class Hp7StreamRelay:
         return self._required_cooldown() - elapsed
 
     async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Track the connection for stop() (#60), then serve it."""
+        if self._stopping:
+            # Accepted just before stop() closed the listener: serving it now
+            # would open a session after the shared one was torn down.
+            try:
+                writer.close()
+            except Exception:
+                pass
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._client_tasks.add(task)
+        self._client_writers.add(writer)
+        try:
+            await self._serve_client(reader, writer)
+        finally:
+            self._client_writers.discard(writer)
+            if task is not None:
+                self._client_tasks.discard(task)
+
+    async def _serve_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
