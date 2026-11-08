@@ -343,6 +343,7 @@ La password va **codificata in URL** nel path. Apri `http://<ip_ha>:11984` per l
 | Un interruttore torna indietro pochi secondi dopo averlo premuto | Il cloud riporta ancora il vecchio stato | Risolto nella 0.13.21 |
 | I sensori di sblocco scattano a ogni riavvio di Home Assistant | Il cloud riporta sempre l'*ultimo* allarme, che all'avvio sembrava nuovo | Risolto nella 0.15.1 |
 | Il live impiega 20-30 s a comparire | Lo spettatore aspettava il keyframe successivo del citofono | Risolto nella 0.13.21 |
+| Il pulsante di sblocco mostra un errore, o uno script si ferma al passo di sblocco | Il cloud EZVIZ ha rifiutato lo sblocco, oppure non c'è una sessione cloud. La riga di log `Remote unlock skipped` o `Remote unlock failed` indica il motivo | Dalla prossima versione uno sblocco fallito genera un errore invece di fallire in silenzio. Se il log dice `no EZVIZ cloud token`, ricarica l'integrazione. In uno script che deve proseguire comunque, aggiungi `continue_on_error: true` al passo di pressione |
 
 **Quando apri una segnalazione**, quattro cose la rendono risolvibile in fretta: **versione dell'integrazione**, **modello**, le tue **impostazioni** (sorgente / modalità / codec) e le righe di log. Attiva prima il debug — Impostazioni → Dispositivi e servizi → EZVIZ HP7 / CP7 → ⋮ → **Attiva registrazione di debug** — poi riproduci il problema e incolla le righe con `ezviz_hp7`.
 
@@ -380,6 +381,8 @@ Per aggiungere una lingua, copia `custom_components/ezviz_hp7/translations/en.js
 ## 🤝 Contribuire
 
 Pull request e segnalazioni sono benvenute. Apri una [issue](../../issues) per bug o richieste.
+
+Per eseguire i test: `pip install -r requirements_test.txt`, poi `pytest` dalla cartella del repository.
 
 ### Riconoscimenti
 
