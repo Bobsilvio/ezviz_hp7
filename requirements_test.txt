@@ -1,0 +1,8 @@
+# Test dependencies: pip install -r requirements_test.txt, then pytest
+pytest-homeassistant-custom-component
+PyTurboJPEG
+pycryptodome
+pandas
+paho-mqtt
+xmltodict
+requests
