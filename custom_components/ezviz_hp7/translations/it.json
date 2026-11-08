@@ -277,5 +277,13 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "unlock_door_failed": {
+      "message": "Sblocco della porta non riuscito. Controlla la connessione al cloud EZVIZ; il motivo è nel log di Home Assistant."
+    },
+    "unlock_gate_failed": {
+      "message": "Sblocco del cancello non riuscito. Controlla la connessione al cloud EZVIZ; il motivo è nel log di Home Assistant."
+    }
   }
 }

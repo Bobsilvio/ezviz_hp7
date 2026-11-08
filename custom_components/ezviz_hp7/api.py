@@ -391,6 +391,32 @@ class Hp7Api:
             _LOGGER.debug("EZVIZ HP7: local IP resolve failed for %s: %s", serial, exc)
             return None
 
+    def _unlock_session_ready(self, serial: str) -> bool:
+        """Return True if a remote unlock can be sent, logging why not if it can't.
+
+        Checked once per press: unlock_door/unlock_gate each try two lock
+        numbers, and a missing session would otherwise be logged twice.
+        Without this log a dead session showed up only as the button's
+        generic "Unlock ... failed", which hid #59/#63 for days.
+        """
+        try:
+            self.ensure_client()
+        except RuntimeError as exc:
+            _LOGGER.warning(
+                "Remote unlock skipped (serial=%s): no EZVIZ cloud client: %s",
+                serial, exc,
+            )
+            return False
+        if not self._token or not self._client:
+            _LOGGER.warning(
+                "Remote unlock skipped (serial=%s): no EZVIZ cloud token, the "
+                "last login failed (see earlier log lines). Reload the "
+                "integration if this persists",
+                serial,
+            )
+            return False
+        return True
+
     def _try_unlock(self, serial: str, lock_no: int) -> bool:
         """Attempt to unlock a specific lock.
 
@@ -401,8 +427,17 @@ class Hp7Api:
         Returns:
             True if unlock was successful.
         """
-        self.ensure_client()
+        try:
+            self.ensure_client()
+        except RuntimeError:
+            # The coordinator's force_relogin can drop the client between the
+            # session check and this call; ensure_client already logged why.
+            return False
         if not self._token or not self._client:
+            _LOGGER.debug(
+                "Remote unlock skipped (serial=%s, lock_no=%s): session lost "
+                "mid-press", serial, lock_no,
+            )
             return False
 
         user_id = self._token.get("username") or self._username
@@ -425,6 +460,8 @@ class Hp7Api:
         Returns:
             True if unlock was successful.
         """
+        if not self._unlock_session_ready(serial):
+            return False
         return self._try_unlock(serial, DEFAULT_DOOR_LOCK_NO) or self._try_unlock(
             serial, DEFAULT_GATE_LOCK_NO
         )
@@ -438,6 +475,8 @@ class Hp7Api:
         Returns:
             True if unlock was successful.
         """
+        if not self._unlock_session_ready(serial):
+            return False
         return self._try_unlock(serial, DEFAULT_GATE_LOCK_NO) or self._try_unlock(
             serial, DEFAULT_DOOR_LOCK_NO
         )
